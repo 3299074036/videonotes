@@ -409,9 +409,15 @@ class LocalLlmEngine @Inject constructor(
                 sb.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
             }
             PromptTemplate.QWEN3 -> {
-                for (m in messages) {
+                for ((i, m) in messages.withIndex()) {
                     sb.append("<|im_start|>").append(m.role).append('\n')
-                        .append(m.content).append("<|im_end|>\n")
+                        .append(m.content)
+                    // Qwen3 是混合推理模型：最后一个 user 消息末尾加 /no_think，
+                    // 关掉思考模式，否则会把内心独白（"接下来，我需要…"）直接输出
+                    if (m.role == "user" && i == messages.lastIndex) {
+                        sb.append("\n/no_think")
+                    }
+                    sb.append("<|im_end|>\n")
                 }
                 sb.append("<|im_start|>assistant\n")
             }
