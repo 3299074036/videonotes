@@ -38,6 +38,26 @@ object LlamaCpp {
     /** 请求取消正在进行的 [generate]（线程安全）。 */
     external fun requestCancel(handle: Long)
 
+    /**
+     * 方案 A 诊断：只对 1 个 token 做一次 decode。
+     * 成功返回 0；若 native 侧 hang 则此调用不返回，Kotlin 侧用超时判定。
+     */
+    external fun singleTokenProbe(handle: Long): Int
+
+    /**
+     * 方案 C 诊断：最小化 native 测试。
+     * 完全绕开封装层（独立加载模型、默认参数、只调 llama_decode），
+     * 用于区分"JNI 封装问题" vs "llama.cpp 构建问题"。
+     * 成功返回 0；hang 则不返回，Kotlin 侧用超时判定。
+     */
+    external fun minimalProbe(
+        modelPath: String,
+        nThreads: Int,
+        nCtx: Int,
+        nTokens: Int,
+        pinBigCores: Int,
+    ): Int
+
     /** 取最近一次 native 错误（中文）。 */
     external fun lastError(): String
 

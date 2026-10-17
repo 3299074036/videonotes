@@ -13,6 +13,7 @@ import com.zola.videonotes.ui.auth.BiliLoginScreen
 import com.zola.videonotes.ui.metadata.MetadataScreen
 import com.zola.videonotes.ui.models.ModelManagementScreen
 import com.zola.videonotes.ui.notes.NoteDetailScreen
+import com.zola.videonotes.ui.ops.OpsDiagnosticsScreen
 import com.zola.videonotes.ui.player.PlayerScreen
 import com.zola.videonotes.ui.settings.LicensesScreen
 import com.zola.videonotes.ui.settings.LogViewerScreen
@@ -50,7 +51,7 @@ fun VideoNotesNavGraph(
                 onNavigateToModels = { navController.navigate(Routes.MODEL_MANAGEMENT) },
                 onLicensesClick = { navController.navigate(Routes.LICENSES) },
                 onBiliLoginClick = { navController.navigate(Routes.BILI_LOGIN) },
-                onNavigateToLogViewer = { navController.navigate(Routes.LOG_VIEWER) },
+                onNavigateToOps = { navController.navigate(Routes.OPS_DIAGNOSTICS) },
             )
         }
         composable(
@@ -93,7 +94,7 @@ fun VideoNotesNavGraph(
                 onNavigateToModels = { navController.navigate(Routes.MODEL_MANAGEMENT) },
                 onLicensesClick = { navController.navigate(Routes.LICENSES) },
                 onBiliLoginClick = { navController.navigate(Routes.BILI_LOGIN) },
-                onNavigateToLogViewer = { navController.navigate(Routes.LOG_VIEWER) },
+                onNavigateToOps = { navController.navigate(Routes.OPS_DIAGNOSTICS) },
                 startTab = backStackEntry.arguments?.getString(Routes.ARG_START_TAB)
                     ?: "kb_home",
             )
@@ -109,6 +110,12 @@ fun VideoNotesNavGraph(
         }
         composable(Routes.LOG_VIEWER) {
             LogViewerScreen(onBackClick = { navController.popBackStack() })
+        }
+        composable(Routes.OPS_DIAGNOSTICS) {
+            OpsDiagnosticsScreen(
+                onBackClick = { navController.popBackStack() },
+                onNavigateToLogViewer = { navController.navigate(Routes.LOG_VIEWER) },
+            )
         }
         composable(
             route = Routes.NOTE_DETAIL_ROUTE,

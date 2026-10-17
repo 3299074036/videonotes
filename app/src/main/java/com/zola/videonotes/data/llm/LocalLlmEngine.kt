@@ -7,17 +7,22 @@ import com.zola.videonotes.data.llm.local.LlamaCpp
 import com.zola.videonotes.data.llm.local.LlmDiagnosticLog
 import com.zola.videonotes.data.llm.local.LocalLlmModels
 import com.zola.videonotes.data.llm.local.LocalLlmPreferences
+import com.zola.videonotes.data.llm.local.PromptTemplate
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.Executors
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.job
 
@@ -56,6 +61,11 @@ class LocalLlmEngine @Inject constructor(
 
     private val lock = Any()
 
+    /** 诊断专用单线程：probe hang 时只卡住这一个线程，不污染 Default/IO 池。 */
+    private val probeDispatcher = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "llm-probe").apply { isDaemon = true }
+    }.asCoroutineDispatcher()
+
     override suspend fun checkReady(): Result<Unit> {
         val model = prefs.currentModel()
         return if (prefs.isModelReady(model)) {
@@ -86,7 +96,7 @@ class LocalLlmEngine @Inject constructor(
             )
         }
 
-        val prompt = buildPrompt(messages)
+        val prompt = buildPrompt(messages, model.promptTemplate)
         // prompt 构建完成：记 system/user 字符数与估算 token
         val systemChars = messages.firstOrNull { it.role == "system" }?.content?.length ?: 0
         val userChars = messages.filter { it.role != "system" }.sumOf { it.content.length }
@@ -177,6 +187,143 @@ class LocalLlmEngine @Inject constructor(
     }
 
     /**
+     * 方案 A 诊断：只送 1 个 token 做一次 decode，区分 batch 问题 vs 根本性 hang。
+     * - 成功 → decode 本身正常，hang 与 batch 大小/数量相关；
+     * - 90s 超时 → 根本性 hang（此时 native 诊断线程仍卡住，句柄作废，需重启 App）。
+     * 诊断跑在专用单线程上，hang 时只卡住这一个线程，不污染 Default/IO 池。
+     * 结论写入 llm.log（App 内"详细日志"页可见）。
+     */
+    suspend fun runSingleTokenProbe(): Result<String> = withContext(probeDispatcher) {
+        val model = prefs.currentModel()
+        val file = prefs.modelFile(model)
+        if (!prefs.isModelReady(model)) {
+            return@withContext Result.failure(
+                IOException("本地模型「${model.displayName}」尚未下载，请先到模型管理页下载"),
+            )
+        }
+        val h = try {
+            ensureLoaded(file.absolutePath)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return@withContext Result.failure(
+                IOException("模型加载失败：${e.message ?: e.javaClass.simpleName}"),
+            )
+        }
+        LlmDiagnosticLog.log(context, "llm", "[诊断] 方案A：单 token 诊断开始（${PROBE_TIMEOUT_MS / 1000}s 超时）…")
+        drainJniLogsToFile()
+        val t0 = SystemClock.elapsedRealtime()
+        val rc = try {
+            withTimeout(PROBE_TIMEOUT_MS) { LlamaCpp.singleTokenProbe(h) }
+        } catch (e: TimeoutCancellationException) {
+            val msg = "单 token decode 在 ${PROBE_TIMEOUT_MS / 1000}s 内未返回：" +
+                "根本性 hang（非 batch 问题）。native 诊断线程已卡住，请重启 App 后再试其它方案。"
+            LlmDiagnosticLog.log(context, "llm", "[诊断] 方案A 结论：$msg")
+            drainJniLogsToFile()
+            return@withContext Result.failure(IOException(msg))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return@withContext Result.failure(
+                IOException("诊断调用失败：${e.message ?: e.javaClass.simpleName}"),
+            )
+        }
+        val ms = SystemClock.elapsedRealtime() - t0
+        drainJniLogsToFile()
+        if (rc != 0) {
+            val err = runCatching { LlamaCpp.lastError() }.getOrDefault("")
+            val msg = "单 token decode 失败（rc=$rc）：$err"
+            LlmDiagnosticLog.log(context, "llm", "[诊断] 方案A 结论：$msg")
+            return@withContext Result.failure(IOException(msg))
+        }
+        val verdict = "单 token decode 成功（${ms}ms）：decode 本身正常，" +
+            "hang 与 batch 大小/数量相关。建议继续方案 B（换 Llama 3.2 1B 对照）。"
+        LlmDiagnosticLog.log(context, "llm", "[诊断] 方案A 结论：$verdict")
+        Result.success(verdict)
+    }
+
+    /**
+     * 方案 C 诊断：最小化 native 测试。
+     * 完全绕开封装层（每次用例独立加载模型、除 n_ctx/n_threads 外全部默认参数、
+     * 只做一次 llama_decode），区分"JNI 封装问题" vs "llama.cpp 构建问题"。
+     * 用例矩阵覆盖线程数 / batch 大小 / n_ctx 三个维度：
+     * - 用例1（4线程/8tok/ctx2048）：最小基线；
+     * - 用例2（1线程/8tok/ctx2048）：单线程是否正常 → 线程池嫌疑；
+     * - 用例3（4线程/64tok/ctx2048）：batch 放大；
+     * - 用例4（4线程/64tok/ctx8192）：封装层同款 n_ctx → n_ctx 嫌疑；
+     * - 用例5（4线程/8tok/ctx2048，大核绑定）：把线程钉到 cpu4-7 →
+     *   若显著快于用例1，则是调度器把线程放在了小核上。
+     * 每个用例 90s 超时；结论写入 llm.log。
+     */
+    suspend fun runMinimalNativeProbe(): Result<String> = withContext(probeDispatcher) {
+        val model = prefs.currentModel()
+        val file = prefs.modelFile(model)
+        if (!prefs.isModelReady(model)) {
+            return@withContext Result.failure(
+                IOException("本地模型「${model.displayName}」尚未下载，请先到模型管理页下载"),
+            )
+        }
+        val path = file.absolutePath
+        LlmDiagnosticLog.log(
+            context, "llm",
+            "[诊断] 方案C：最小化 native 测试开始（5 个用例，每用例 ${PROBE_TIMEOUT_MS / 1000}s 超时）…",
+        )
+        data class Case(
+            val threads: Int,
+            val nCtx: Int,
+            val tokens: Int,
+            val pinBigCores: Int,
+            val label: String,
+        )
+        val cases = listOf(
+            Case(4, 2048, 8, 0, "用例1 4线程/8tok/ctx2048（基线）"),
+            Case(1, 2048, 8, 0, "用例2 1线程/8tok/ctx2048（线程池对照）"),
+            Case(4, 2048, 64, 0, "用例3 4线程/64tok/ctx2048（batch 放大）"),
+            Case(4, 8192, 64, 0, "用例4 4线程/64tok/ctx8192（封装层同款 n_ctx）"),
+            Case(4, 2048, 8, 1, "用例5 4线程/8tok/ctx2048（绑定大核cpu4-7）"),
+        )
+        val sb = StringBuilder()
+        for (c in cases) {
+            LlmDiagnosticLog.log(context, "llm", "[诊断] 方案C ${c.label}：开始…")
+            drainJniLogsToFile()
+            val t0 = SystemClock.elapsedRealtime()
+            val rc = try {
+                withTimeout(PROBE_TIMEOUT_MS) {
+                    LlamaCpp.minimalProbe(path, c.threads, c.nCtx, c.tokens, c.pinBigCores)
+                }
+            } catch (e: TimeoutCancellationException) {
+                val msg = "${c.label}：❌ 90s 超时（hang）"
+                LlmDiagnosticLog.log(context, "llm", "[诊断] 方案C $msg")
+                sb.appendLine(msg)
+                drainJniLogsToFile()
+                continue
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val msg = "${c.label}：❌ 调用异常（${e.message}）"
+                LlmDiagnosticLog.log(context, "llm", "[诊断] 方案C $msg")
+                sb.appendLine(msg)
+                continue
+            }
+            val ms = SystemClock.elapsedRealtime() - t0
+            drainJniLogsToFile()
+            if (rc != 0) {
+                val err = runCatching { LlamaCpp.lastError() }.getOrDefault("")
+                val msg = "${c.label}：❌ 失败 rc=$rc（$err）"
+                LlmDiagnosticLog.log(context, "llm", "[诊断] 方案C $msg")
+                sb.appendLine(msg)
+            } else {
+                val msg = "${c.label}：✅ 成功（${ms}ms，native 日志有精确 tok/s）"
+                LlmDiagnosticLog.log(context, "llm", "[诊断] 方案C $msg")
+                sb.appendLine(msg)
+            }
+        }
+        val verdict = sb.toString().trim()
+        LlmDiagnosticLog.log(context, "llm", "[诊断] 方案C 汇总：\n$verdict")
+        Result.success(verdict)
+    }
+
+    /**
      * 确保模型已加载。线程安全；重复调用直接返回已加载句柄。
      * 抛 IOException（native 错误信息）。
      */
@@ -238,14 +385,27 @@ class LocalLlmEngine @Inject constructor(
             .forEach { line -> LlmDiagnosticLog.log(context, "llm-cpp", line) }
     }
 
-    /** Qwen3 chat template 组装 prompt。 */
-    private fun buildPrompt(messages: List<ChatMessage>): String {
+    /** 按模型家族的 chat template 组装 prompt。 */
+    private fun buildPrompt(messages: List<ChatMessage>, template: PromptTemplate): String {
         val sb = StringBuilder()
-        for (m in messages) {
-            sb.append("<|im_start|>").append(m.role).append('\n')
-                .append(m.content).append("<|im_end|>\n")
+        when (template) {
+            PromptTemplate.LLAMA3 -> {
+                sb.append("<|begin_of_text|>")
+                for (m in messages) {
+                    sb.append("<|start_header_id|>").append(m.role)
+                        .append("<|end_header_id|>\n\n")
+                        .append(m.content).append("<|eot_id|>")
+                }
+                sb.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
+            }
+            PromptTemplate.QWEN3 -> {
+                for (m in messages) {
+                    sb.append("<|im_start|>").append(m.role).append('\n')
+                        .append(m.content).append("<|im_end|>\n")
+                }
+                sb.append("<|im_start|>assistant\n")
+            }
         }
-        sb.append("<|im_start|>assistant\n")
         return sb.toString()
     }
 
@@ -266,5 +426,8 @@ class LocalLlmEngine @Inject constructor(
 
         /** 本地温度：0.2，与云端一致，抑制幻觉。 */
         const val TEMPERATURE_LOCAL = 0.2f
+
+        /** 方案 A 诊断超时：90s。1 token 的 decode 正常应在秒级完成。 */
+        const val PROBE_TIMEOUT_MS = 90_000L
     }
 }

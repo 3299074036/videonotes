@@ -60,6 +60,10 @@ object WorkerDiagnosticLog {
     fun clear(context: Context) {
         try {
             logFile(context).takeIf { it.exists() }?.writeText("")
+            // 内存环形缓冲同步清空：否则日志页（文件 + flow 合并显示）点清空后旧行仍在
+            synchronized(_logFlow) {
+                _logFlow.value = emptyList()
+            }
         } catch (_: Exception) {
         }
     }

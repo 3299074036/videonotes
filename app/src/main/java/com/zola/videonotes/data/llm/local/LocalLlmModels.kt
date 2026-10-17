@@ -9,6 +9,14 @@ package com.zola.videonotes.data.llm.local
  * 选择 Qwen3 的原因：中文与指令遵循在同体积下最强；
  * Q4_K_M 是速度/质量平衡点（社区实测推荐）。
  */
+/** prompt 拼装模板：不同模型家族的 chat template 不同。 */
+enum class PromptTemplate {
+    /** Qwen3：`<|im_start|>role\n…<|im_end|>`。 */
+    QWEN3,
+    /** Llama 3：`<|start_header_id|>role<|end_header_id|>` + `<|eot_id|>`。 */
+    LLAMA3,
+}
+
 data class LocalLlmModel(
     /** 稳定 ID，如 "qwen3-4b"。 */
     val id: String,
@@ -24,6 +32,8 @@ data class LocalLlmModel(
     val sha256: String? = null,
     /** 适用说明。 */
     val description: String,
+    /** prompt 模板（默认 Qwen3）。 */
+    val promptTemplate: PromptTemplate = PromptTemplate.QWEN3,
 )
 
 object LocalLlmModels {
@@ -46,7 +56,22 @@ object LocalLlmModels {
         description = "速度快约一倍，复杂长文稿质量略低，需要约 2GB 可用内存",
     )
 
-    val ALL = listOf(QWEN3_4B, QWEN3_1_7B)
+    /**
+     * 方案 B 诊断对照模型：Llama 3.2 1B Instruct（Q4_K_M）。
+     * 用于区分 prefill hang 是 Qwen 特定问题还是通用问题。
+     * 注意：Llama 3 家族用自家的 chat template（见 [PromptTemplate.LLAMA3]）。
+     */
+    val LLAMA3_2_1B = LocalLlmModel(
+        id = "llama3_2-1b",
+        displayName = "Llama 3.2 1B（诊断对照）",
+        fileName = "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+        url = "https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+        sizeBytes = 807_694_368L,
+        description = "诊断对照用：排查 prefill hang 是否为 Qwen 特定问题。体积小、速度快，不适合正式笔记生成",
+        promptTemplate = PromptTemplate.LLAMA3,
+    )
+
+    val ALL = listOf(QWEN3_4B, QWEN3_1_7B, LLAMA3_2_1B)
 
     fun byId(id: String): LocalLlmModel? = ALL.find { it.id == id }
 }

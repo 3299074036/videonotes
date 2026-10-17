@@ -28,6 +28,9 @@ object Routes {
     /** 统一日志查看页：LLM 日志 / 转写日志，实时查看与导出。 */
     const val LOG_VIEWER = "log_viewer"
 
+    /** 运维诊断页：LLM 诊断探针 / 日志管理 / 设备信息。 */
+    const val OPS_DIAGNOSTICS = "ops_diagnostics"
+
     /** 元信息页参数：待解析的视频链接（分享文本亦可，解析器内部会提取 URL）。 */
     const val ARG_URL = "url"
 

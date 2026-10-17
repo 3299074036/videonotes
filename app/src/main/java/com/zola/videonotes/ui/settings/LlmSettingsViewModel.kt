@@ -7,6 +7,7 @@ import com.zola.videonotes.data.llm.LlmCredentialStore
 import com.zola.videonotes.data.llm.LlmEngineType
 import com.zola.videonotes.data.llm.LlmPresets
 import com.zola.videonotes.data.llm.LlmSettings
+import com.zola.videonotes.data.llm.LocalLlmEngine
 import com.zola.videonotes.data.llm.local.LocalLlmModels
 import com.zola.videonotes.data.llm.local.LocalLlmPreferences
 import com.zola.videonotes.data.llm.local.LocalModelDownloadManager
@@ -49,6 +50,7 @@ class LlmSettingsViewModel @Inject constructor(
     private val llmClient: LlmClient,
     private val localPrefs: LocalLlmPreferences,
     val localDownloadManager: LocalModelDownloadManager,
+    private val localLlmEngine: LocalLlmEngine,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(LlmSettingsUiState())
@@ -57,6 +59,12 @@ class LlmSettingsViewModel @Inject constructor(
     /** 本地模型下载状态（key 为 modelId）。 */
     val localDlStates: StateFlow<Map<String, LocalModelDownloadManager.ModelDlState>> =
         localDownloadManager.states
+
+    /** 方案 A 诊断：进行中标志与结论文案（结论同时写入 llm.log，可在"详细日志"页查看全量）。 */
+    private val _probing = MutableStateFlow(false)
+    val probing: StateFlow<Boolean> = _probing.asStateFlow()
+    private val _probeResult = MutableStateFlow<String?>(null)
+    val probeResult: StateFlow<String?> = _probeResult.asStateFlow()
 
     private var testJob: Job? = null
 
@@ -150,6 +158,54 @@ class LlmSettingsViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 _uiState.update { it.copy(testing = false) }
                 throw e
+            }
+        }
+    }
+
+    /**
+     * 方案 A 诊断：单 token 诊断。
+     * 只送 1 个 token 做一次 decode：成功=batch 问题，90s 超时=根本性 hang。
+     * 结论同时写入 llm.log（"详细日志"页可见）。
+     */
+    fun runSingleTokenProbe() {
+        if (_probing.value) return
+        viewModelScope.launch {
+            _probing.value = true
+            _probeResult.value = null
+            try {
+                localLlmEngine.runSingleTokenProbe()
+                    .onSuccess { _probeResult.value = "✅ $it" }
+                    .onFailure { e -> _probeResult.value = "❌ ${e.message ?: "诊断失败"}" }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _probeResult.value = "❌ 诊断异常：${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                _probing.value = false
+            }
+        }
+    }
+
+    /**
+     * 方案 C 诊断：最小化 native 测试。
+     * 完全绕开封装层，4 个用例覆盖线程数/batch/n_ctx，用于区分
+     * "JNI 封装问题" vs "llama.cpp 构建问题"。结论同时写入 llm.log。
+     */
+    fun runMinimalProbe() {
+        if (_probing.value) return
+        viewModelScope.launch {
+            _probing.value = true
+            _probeResult.value = null
+            try {
+                localLlmEngine.runMinimalNativeProbe()
+                    .onSuccess { _probeResult.value = "✅ 方案C完成：\n$it" }
+                    .onFailure { e -> _probeResult.value = "❌ ${e.message ?: "诊断失败"}" }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _probeResult.value = "❌ 诊断异常：${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                _probing.value = false
             }
         }
     }

@@ -17,12 +17,15 @@
 
 #include <algorithm>
 #include <android/log.h>
+#include <asm/hwcap.h>
 #include <atomic>
 #include <chrono>
 #include <cstring>
 #include <mutex>
 #include <new>
 #include <string>
+#include <sys/auxv.h>
+#include <thread>
 #include <vector>
 
 #include "llama.h"
@@ -101,10 +104,12 @@ std::mutex g_prog_mu;
 std::string g_last_progress;
 
 // JNI 日志桥接 buffer：llama.cpp 内部日志 + 关键 LLM_LOGI 诊断行，
-// Kotlin 侧经 drainJniLogs() 取走后写入 llm.log（App 内"详细日志"页可见）
+// Kotlin 侧经 drainJniLogs() 取走后写入 llm.log（App 内"详细日志"页可见）。
+// 注意：单次模型 load 的 llama.cpp 日志 spam 可达 1000+ 行，buffer 太小会把
+// probe 起始处的诊断行（pin/cpu_features）挤掉——2026-10-17 实测 200 行不够。
 std::mutex g_jni_log_mu;
 std::vector<std::string> g_jni_log_buffer;
-constexpr size_t kJniLogMaxLines = 200;
+constexpr size_t kJniLogMaxLines = 4096;
 
 void set_last_error(const char* msg) {
     std::lock_guard<std::mutex> lock(g_err_mu);
@@ -119,6 +124,30 @@ void set_last_perf(const std::string& s) {
 void set_last_progress(const std::string& s) {
     std::lock_guard<std::mutex> lock(g_prog_mu);
     g_last_progress = s;
+}
+
+// 返回 s 中最长的合法 UTF-8 前缀长度。Qwen3 等分词器可能把一个多字节字符
+// 切成多个 token，逐 token 调 NewStringUTF 会在切开处传非法 UTF-8 → JNI 返回
+// NULL → Kotlin 侧 NPE 闪退。流式输出时必须只回调完整字符。
+size_t utf8_valid_prefix_len(const std::string& s) {
+    size_t i = 0;
+    const size_t n = s.size();
+    while (i < n) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        size_t len;
+        if (c < 0x80) len = 1;
+        else if ((c & 0xE0) == 0xC0) len = 2;
+        else if ((c & 0xF0) == 0xE0) len = 3;
+        else if ((c & 0xF8) == 0xF0) len = 4;
+        else return i;  // 非法起始字节
+        if (i + len > n) return i;  // 尾部不完整，留给下个 token 补齐
+        for (size_t k = 1; k < len; ++k) {
+            const unsigned char cc = static_cast<unsigned char>(s[i + k]);
+            if ((cc & 0xC0) != 0x80) return i;  // 非法后续字节
+        }
+        i += len;
+    }
+    return n;
 }
 
 // token → UTF-8 文本片段
@@ -262,6 +291,11 @@ jint generate_impl(JNIEnv* env, LlamaHandle* h, const char* prompt_utf8,
     int32_t n_past = 0;
     int32_t n_gen = 0;  // 采样阶段成功 decode 的 token 数（生成速度口径）
 
+    // 每次 generate 都从干净 KV 开始：句柄常驻、KV 里可能留着上次 generate 的
+    // positions（n_past 每次都从 0 起），不清掉的话 llama.cpp 会报
+    // "inconsistent sequence positions"（要求新 batch 位置连续：Y = X + 1）。
+    llama_memory_clear(llama_get_memory(h->ctx), /*data=*/true);
+
     LLM_LOGI_BRIDGE("[llm] generate start: n_prompt=%d, n_batch_max=%d, max_tokens=%d, temp=%.2f",
              n_prompt, n_batch_max, max_tokens, temperature);
 
@@ -308,6 +342,7 @@ jint generate_impl(JNIEnv* env, LlamaHandle* h, const char* prompt_utf8,
     set_last_progress("decode 进行中…");
     const llama_token eos = llama_vocab_eos(vocab);
     std::string piece;
+    std::string utf8_pending;  // 被切开的多字节字符暂存，等下个 token 补齐再回调
     const int64_t t_dec0 = now_ms();
     for (int32_t i = 0; i < max_tokens && rc == 0; ++i) {
         if (h->cancel.load(std::memory_order_relaxed)) {
@@ -320,14 +355,24 @@ jint generate_impl(JNIEnv* env, LlamaHandle* h, const char* prompt_utf8,
         if (tok == eos) break;  // 正常结束
 
         if (token_to_text(vocab, tok, piece) && !piece.empty()) {
-            jstring jpiece = env->NewStringUTF(piece.c_str());
-            env->CallVoidMethod(cb_global, on_token, jpiece);
-            env->DeleteLocalRef(jpiece);
-            if (env->ExceptionCheck()) {
-                env->ExceptionClear();
-                set_last_error("回调 onToken 时发生异常");
-                rc = 16;
-                break;
+            // 流式 UTF-8：只回调完整字符，不完整的尾部暂存等下个 token 补齐。
+            // 直接 NewStringUTF 传被切开的多字节字符会返回 NULL → Kotlin NPE 闪退。
+            utf8_pending.append(piece);
+            const size_t valid_len = utf8_valid_prefix_len(utf8_pending);
+            if (valid_len > 0) {
+                std::string emit = utf8_pending.substr(0, valid_len);
+                utf8_pending.erase(0, valid_len);
+                jstring jpiece = env->NewStringUTF(emit.c_str());
+                if (jpiece) {
+                    env->CallVoidMethod(cb_global, on_token, jpiece);
+                    env->DeleteLocalRef(jpiece);
+                }
+                if (env->ExceptionCheck()) {
+                    env->ExceptionClear();
+                    set_last_error("回调 onToken 时发生异常");
+                    rc = 16;
+                    break;
+                }
             }
         }
         if (n_past + 1 >= (int32_t) h->n_ctx) break;  // 上下文用尽，正常结束
@@ -344,6 +389,20 @@ jint generate_impl(JNIEnv* env, LlamaHandle* h, const char* prompt_utf8,
         n_gen += 1;
     }
     const int64_t decode_ms = now_ms() - t_dec0;
+
+    // 循环结束：把残留的未补齐尾部也发出（正常应为空；若有则只发合法前缀）
+    if (rc == 0 && !utf8_pending.empty()) {
+        const size_t valid_len = utf8_valid_prefix_len(utf8_pending);
+        if (valid_len > 0) {
+            std::string emit = utf8_pending.substr(0, valid_len);
+            jstring jpiece = env->NewStringUTF(emit.c_str());
+            if (jpiece) {
+                env->CallVoidMethod(cb_global, on_token, jpiece);
+                env->DeleteLocalRef(jpiece);
+            }
+            if (env->ExceptionCheck()) env->ExceptionClear();
+        }
+    }
 
     // 性能汇总：只在结束时打一次（不逐 token 打，避免刷屏）
     const double prefill_tps = prefill_ms > 0 ? n_prefill_done * 1000.0 / prefill_ms : 0.0;
@@ -363,6 +422,281 @@ jint generate_impl(JNIEnv* env, LlamaHandle* h, const char* prompt_utf8,
     llama_batch_free(batch);
     llama_sampler_free(smpl);
     return rc;
+}
+
+// 方案 A 诊断：只对 1 个 token 做一次 llama_decode。
+// 成功返回 0；若连 1 个 token 都 hang，则此调用不返回（Kotlin 侧用超时判定），
+// 结论为根本性 hang（非 batch 大小问题）。
+jint probe_impl(LlamaHandle* h) {
+    const llama_vocab* vocab = llama_model_get_vocab(h->model);
+    if (!vocab) {
+        set_last_error("取模型词表失败");
+        return 10;
+    }
+    // 固定最小输入 "hi"，只取首个 token
+    static const char* kProbeText = "hi";
+    int32_t n = llama_tokenize(vocab, kProbeText, (int32_t) std::strlen(kProbeText),
+                               nullptr, 0, /*add_special=*/true, /*parse_special=*/true);
+    if (n >= 0) {
+        set_last_error("诊断输入分词失败");
+        return 11;
+    }
+    n = -n;
+    if (n < 1) {
+        set_last_error("诊断输入分词为空");
+        return 11;
+    }
+    std::vector<llama_token> toks((size_t) n);
+    if (llama_tokenize(vocab, kProbeText, (int32_t) std::strlen(kProbeText),
+                       toks.data(), n, true, true) < 0) {
+        set_last_error("诊断输入分词失败");
+        return 11;
+    }
+
+    llama_batch batch = llama_batch_init(1, 0, 1);
+    batch.n_tokens   = 1;
+    batch.token[0]   = toks[0];
+    batch.pos[0]     = 0;
+    batch.n_seq_id[0] = 1;
+    batch.seq_id[0][0] = 0;
+    batch.logits[0]  = true;
+
+    LLM_LOGI_BRIDGE("[llm][probe] 方案A 单 token 诊断开始：输入 \"%s\" → %d tokens，"
+             "取首个 token(id=%d) 做 1 次 decode（batch=1, pos=0）",
+             kProbeText, n, (int) toks[0]);
+    set_last_progress("probe: 1 token decode 进行中…");
+    const int64_t t0 = now_ms();
+    const int ret = llama_decode(h->ctx, batch);
+    const int64_t ms = now_ms() - t0;
+    llama_batch_free(batch);
+    // 探针副作用清理：decode 已在 KV cache 留下 pos=0 的 token，
+    // 不清掉的话，下次 probe/generate 从 pos=0 起 decode 会触发
+    // llama.cpp 的 "inconsistent sequence positions" 校验失败（要求 Y = X + 1）。
+    llama_memory_clear(llama_get_memory(h->ctx), /*data=*/true);
+    LLM_LOGI_BRIDGE("[llm][probe] KV cache 已清理，探针无副作用");
+    if (ret != 0) {
+        char msg[128];
+        std::snprintf(msg, sizeof(msg), "单 token decode 失败（ret=%d）", ret);
+        set_last_error(msg);
+        LLM_LOGI_BRIDGE("[llm][probe] 单 token decode 失败：ret=%d，耗时 %lldms", ret, (long long) ms);
+        return 15;
+    }
+    LLM_LOGI_BRIDGE("[llm][probe] 单 token decode 成功：ret=0，耗时 %lldms", (long long) ms);
+    set_last_progress("probe: 完成");
+    return 0;
+}
+
+/** 读 CPU 频率（kHz），部分手机无权限则返回 -1。只读前 8 核。 */
+static void log_cpu_freqs(const char* tag) {
+    char line[256] = {0};
+    size_t off = 0;
+    for (int c = 0; c < 8; ++c) {
+        char path[128];
+        std::snprintf(path, sizeof(path),
+                      "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", c);
+        FILE* f = std::fopen(path, "r");
+        int khz = -1;
+        if (f) {
+            if (std::fscanf(f, "%d", &khz) != 1) khz = -1;
+            std::fclose(f);
+        }
+        off += std::snprintf(line + off, sizeof(line) - off,
+                             "%s%d", c ? "," : "", khz / 1000);
+        if (off >= sizeof(line) - 16) break;
+    }
+    LLM_LOGI_BRIDGE("[llm][cprobe] cpu_freq(%s): %s MHz", tag, line);
+}
+
+/** 读 SoC 温度（best-effort）：遍历 thermal_zone 取可读的最大值。 */
+static void log_thermal(const char* tag) {
+    long max_millic = -1;
+    for (int z = 0; z < 16; ++z) {
+        char path[128];
+        std::snprintf(path, sizeof(path), "/sys/class/thermal/thermal_zone%d/temp", z);
+        FILE* f = std::fopen(path, "r");
+        if (!f) continue;
+        long t = -1;
+        if (std::fscanf(f, "%ld", &t) == 1 && t > max_millic) max_millic = t;
+        std::fclose(f);
+    }
+    if (max_millic >= 0) {
+        LLM_LOGI_BRIDGE("[llm][cprobe] thermal(%s): max_zone=%.1fC", tag, max_millic / 1000.0);
+    } else {
+        LLM_LOGI_BRIDGE("[llm][cprobe] thermal(%s): n/a", tag);
+    }
+}
+
+/** 打 CPU 特性（直接读 HWCAP，和 ggml 运行时检测同一来源）。 */
+static void log_cpu_features() {
+    // <asm/hwcap.h>：AT_HWCAP / AT_HWCAP2
+    const unsigned long hwcap  = getauxval(AT_HWCAP);
+    const unsigned long hwcap2 = getauxval(AT_HWCAP2);
+    const int neon     = (hwcap  & HWCAP_ASIMD)   ? 1 : 0;
+    const int dotprod  = (hwcap  & HWCAP_ASIMDDP) ? 1 : 0;
+    const int sve      = (hwcap  & HWCAP_SVE)     ? 1 : 0;
+    const int sve2     = (hwcap2 & HWCAP2_SVE2)   ? 1 : 0;
+    const int i8mm     = (hwcap2 & HWCAP2_I8MM)   ? 1 : 0;
+    const int fp16     = (hwcap  & HWCAP_FPHP)    ? 1 : 0;  // ASIMD half-precision
+    LLM_LOGI_BRIDGE("[llm][cprobe] cpu_features(hwcap): neon=%d dotprod=%d fp16=%d sve=%d sve2=%d i8mm=%d",
+             neon, dotprod, fp16, sve, sve2, i8mm);
+}
+
+/** 把当前线程（及之后创建的线程，继承 affinity）绑到大核 cpu4-7。 */
+static void pin_to_big_cores() {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    for (int c = 4; c < 8; ++c) CPU_SET(c, &set);
+    // Bionic 没有 pthread_setaffinity_np，用 sched_setaffinity（pid=0 表示当前线程）
+    const int rc = sched_setaffinity(0, sizeof(set), &set);
+    // 验证实际生效的 mask
+    cpu_set_t check;
+    CPU_ZERO(&check);
+    sched_getaffinity(0, sizeof(check), &check);
+    char mask[64] = {0};
+    size_t off = 0;
+    for (int c = 0; c < 8 && off < sizeof(mask) - 4; ++c) {
+        off += std::snprintf(mask + off, sizeof(mask) - off, "%d", CPU_ISSET(c, &check) ? 1 : 0);
+    }
+    LLM_LOGI_BRIDGE("[llm][cprobe] pin_big_cores: setaffinity rc=%d, mask=%s", rc, mask);
+    // 当前线程所在 CPU
+    LLM_LOGI_BRIDGE("[llm][cprobe] pin_big_cores: current cpu=%d", sched_getcpu());
+}
+
+/** 内存带宽微基准：256MB memset 计时。区分"系统慢" vs "ggml 慢"。 */
+static void log_membw() {
+    const size_t n = 256ull * 1024 * 1024;
+    void* buf = std::malloc(n);
+    if (!buf) {
+        LLM_LOGI_BRIDGE("[llm][cprobe] membw: malloc 失败，跳过");
+        return;
+    }
+    const int64_t t0 = now_ms();
+    std::memset(buf, 0xAB, n);
+    const int64_t ms = now_ms() - t0;
+    // 防止编译器优化掉 memset：读一个字节
+    volatile unsigned char sink = ((unsigned char*) buf)[n - 1];
+    (void) sink;
+    std::free(buf);
+    const double mbs = ms > 0 ? 256.0 * 1000.0 / ms : 0.0;
+    LLM_LOGI_BRIDGE("[llm][cprobe] membw: 256MB memset 用时 %lldms（%.0f MB/s）",
+             (long long) ms, mbs);
+}
+
+// 方案 C：最小化 native 测试。完全绕开封装层，直连 llama.cpp 最简调用：
+// - 模型用 llama_model_default_params() 加载；
+// - 上下文除 n_ctx / n_threads 外全部默认；
+// - 不调 memory_clear、不建 sampler、不走回调；
+// - batch 只填最简字段（token/pos/seq_id/logits）。
+// 若最小化测试也 hang → llama.cpp 构建问题（ggml 后端/线程/编译选项）；
+// 若最小化测试正常 → JNI 封装层用法问题。
+// 每次调用独立 load/unload，不碰常驻句柄。
+jint minimal_probe_impl(const char* path, int32_t n_threads, int32_t n_ctx, int32_t n_tokens_want,
+                        int32_t pin_big_cores) {
+    // 大核绑定测试：先绑当前线程，之后创建的 ggml 线程会继承 affinity mask
+    if (pin_big_cores) {
+        pin_to_big_cores();
+    }
+    log_cpu_features();
+    const int64_t t_load0 = now_ms();
+    llama_model* model = llama_model_load_from_file(path, llama_model_default_params());
+    if (!model) {
+        set_last_error("最小化测试：模型文件加载失败");
+        return 21;
+    }
+    llama_context_params cparams = llama_context_default_params();
+    cparams.n_ctx = n_ctx > 0 ? (uint32_t) n_ctx : cparams.n_ctx;
+    if (n_threads > 0) {
+        cparams.n_threads       = (uint32_t) n_threads;
+        cparams.n_threads_batch = (uint32_t) n_threads;
+    }
+    llama_context* ctx = llama_init_from_model(model, cparams);
+    if (!ctx) {
+        llama_model_free(model);
+        set_last_error("最小化测试：上下文初始化失败");
+        return 22;
+    }
+    const int64_t load_ms = now_ms() - t_load0;
+    const llama_vocab* vocab = llama_model_get_vocab(model);
+    if (!vocab) {
+        llama_free(ctx);
+        llama_model_free(model);
+        set_last_error("最小化测试：取词表失败");
+        return 23;
+    }
+
+    // 固定短文本拼到足够长度，截断到 n_tokens_want
+    std::string text;
+    for (int i = 0; i < 32; ++i) text += "Hello world, this is a minimal native probe. ";
+    int32_t n = llama_tokenize(vocab, text.c_str(), (int32_t) text.size(),
+                               nullptr, 0, /*add_special=*/true, /*parse_special=*/true);
+    if (n >= 0) {
+        llama_free(ctx);
+        llama_model_free(model);
+        set_last_error("最小化测试：分词失败");
+        return 23;
+    }
+    n = -n;
+    const int32_t n_eval = std::min(n, n_tokens_want > 0 ? n_tokens_want : n);
+    std::vector<llama_token> toks((size_t) n);
+    if (llama_tokenize(vocab, text.c_str(), (int32_t) text.size(), toks.data(),
+                       n, true, true) < 0) {
+        llama_free(ctx);
+        llama_model_free(model);
+        set_last_error("最小化测试：分词失败");
+        return 23;
+    }
+
+    llama_batch batch = llama_batch_init(n_eval, 0, 1);
+    batch.n_tokens = n_eval;
+    for (int32_t i = 0; i < n_eval; ++i) {
+        batch.token[i]     = toks[i];
+        batch.pos[i]       = i;
+        batch.n_seq_id[i]  = 1;
+        batch.seq_id[i][0] = 0;
+        batch.logits[i]    = (i == n_eval - 1);
+    }
+
+    LLM_LOGI_BRIDGE("[llm][cprobe] 最小化测试开始：threads=%d, n_ctx=%u, tokens=%d, load=%lldms",
+             (int) cparams.n_threads, cparams.n_ctx, n_eval, (long long) load_ms);
+    // 系统级基线：CPU 频率 + 温度 + 内存带宽（区分"系统慢" vs "ggml 慢"）
+    log_cpu_freqs("before");
+    log_thermal("before");
+    log_membw();
+    // decode 中途采样：后台线程每 500ms 记一次频率/温度，看 governor 是否在 decode 中途降频
+    // （before/after 两个瞬时采样会漏掉中途的降频，这是之前分析的最大盲区）
+    std::atomic<bool> sampler_stop{false};
+    std::thread sampler([&]() {
+        int idx = 0;
+        while (!sampler_stop.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (sampler_stop.load(std::memory_order_relaxed)) break;
+            char tag[32];
+            std::snprintf(tag, sizeof(tag), "mid-%d", ++idx);
+            log_cpu_freqs(tag);
+            if (idx % 4 == 0) log_thermal(tag);  // 每 2s 记一次温度
+        }
+    });
+    const int64_t t0 = now_ms();
+    const int ret = llama_decode(ctx, batch);
+    const int64_t ms = now_ms() - t0;
+    sampler_stop.store(true, std::memory_order_relaxed);
+    sampler.join();
+    log_cpu_freqs("after");
+    log_thermal("after");
+    llama_batch_free(batch);
+    llama_free(ctx);
+    llama_model_free(model);
+    if (ret != 0) {
+        char msg[128];
+        std::snprintf(msg, sizeof(msg), "最小化测试 decode 失败（ret=%d）", ret);
+        set_last_error(msg);
+        LLM_LOGI_BRIDGE("[llm][cprobe] decode 失败：ret=%d，耗时 %lldms", ret, (long long) ms);
+        return 24;
+    }
+    const double tps = ms > 0 ? n_eval * 1000.0 / ms : 0.0;
+    LLM_LOGI_BRIDGE("[llm][cprobe] decode 成功：threads=%d, n_ctx=%u, %d tokens in %lldms (%.1f tok/s)",
+             (int) cparams.n_threads, cparams.n_ctx, n_eval, (long long) ms, tps);
+    return 0;
 }
 
 }  // namespace
@@ -447,6 +781,46 @@ Java_com_zola_videonotes_data_llm_local_LlamaCpp_generate(
         return rc;
     } catch (...) {
         set_last_error("native 内部异常（generate）");
+        return 99;
+    }
+}
+
+JNIEXPORT jint JNICALL
+Java_com_zola_videonotes_data_llm_local_LlamaCpp_singleTokenProbe(
+        JNIEnv* env, jobject /*thiz*/, jlong handle) {
+    try {
+        LlamaHandle* h = reinterpret_cast<LlamaHandle*>(handle);
+        if (!h || !h->ctx || !h->model) {
+            set_last_error("模型未加载");
+            return 1;
+        }
+        h->cancel.store(false, std::memory_order_relaxed);
+        return probe_impl(h);
+    } catch (...) {
+        set_last_error("native 内部异常（singleTokenProbe）");
+        return 99;
+    }
+}
+
+JNIEXPORT jint JNICALL
+Java_com_zola_videonotes_data_llm_local_LlamaCpp_minimalProbe(
+        JNIEnv* env, jobject /*thiz*/, jstring modelPath,
+        jint nThreads, jint nCtx, jint nTokens, jint pinBigCores) {
+    try {
+        if (!modelPath) {
+            set_last_error("模型路径为空");
+            return 2;
+        }
+        const char* cpath = env->GetStringUTFChars(modelPath, nullptr);
+        if (!cpath) {
+            set_last_error("读取模型路径失败");
+            return 2;
+        }
+        const jint rc = minimal_probe_impl(cpath, nThreads, nCtx, nTokens, pinBigCores);
+        env->ReleaseStringUTFChars(modelPath, cpath);
+        return rc;
+    } catch (...) {
+        set_last_error("native 内部异常（minimalProbe）");
         return 99;
     }
 }
