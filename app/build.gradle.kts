@@ -47,18 +47,23 @@ android {
                 keyPassword = "android"
             }
         }
-        // 发布签名模板（默认禁用）：不要把 keystore 与密码提交到仓库。
-        // 1. 按 docs/research/videonotes/发布检查清单.md 用 keytool 生成
-        //    codes/keystores/videonotes-release.keystore（chmod 600，仅本机保管）；
-        // 2. 取消下面注释；
-        // 3. 构建时通过环境变量传入密码（不要写在 gradle 文件里）：
-        //      RELEASE_STORE_PASSWORD=... RELEASE_KEY_PASSWORD=... ./gradlew assembleRelease
-        // create("videonotesRelease") {
-        //     storeFile = rootProject.file("../keystores/videonotes-release.keystore")
-        //     storePassword = System.getenv("RELEASE_STORE_PASSWORD")
-        //     keyAlias = "videonotes"
-        //     keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
-        // }
+        // 发布签名：keystore 在 codes/keystores/videonotes-release.keystore（chmod 600，
+        // 仅本机保管，不进仓库）。密码从同目录的 .pass 文件或环境变量读取（不要写在 gradle 文件里）。
+        val releaseKeystore = rootProject.file("../keystores/videonotes-release.keystore")
+        if (releaseKeystore.exists()) {
+            val passFile = rootProject.file("../keystores/videonotes-release.pass")
+            val releasePass = if (passFile.exists()) {
+                passFile.readText().trim()
+            } else {
+                System.getenv("RELEASE_STORE_PASSWORD") ?: ""
+            }
+            create("videonotesRelease") {
+                storeFile = releaseKeystore
+                storePassword = releasePass
+                keyAlias = "videonotes-release"
+                keyPassword = System.getenv("RELEASE_KEY_PASSWORD") ?: releasePass
+            }
+        }
     }
 
     buildTypes {
@@ -74,10 +79,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // 发布签名：默认注释掉。按 docs/research/videonotes/发布检查清单.md 生成
-            // codes/keystores/videonotes-release.keystore 后，取消 signingConfigs.release
-            // 的注释，并通过环境变量传入密码再启用下行：
-            // signingConfig = signingConfigs.getByName("videonotesRelease")
+            // 发布签名：codes/keystores/videonotes-release.keystore 已生成（本机保管），
+            // 密码从 .pass 文件自动读取，直接启用。
+            signingConfig = signingConfigs.getByName("videonotesRelease")
         }
     }
 
