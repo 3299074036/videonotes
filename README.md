@@ -26,12 +26,20 @@
 ```bash
 # 一键构建 debug 包（自动导出环境变量，产物归档到 apps/videonotes/）
 bash scripts/videonotes/build-videonotes.sh assembleDebug
+
+# 一键构建 release 包（需 codes/keystores/videonotes-release.keystore，密码从同目录 .pass 文件读取）
+bash scripts/videonotes/build-videonotes.sh assembleRelease
 ```
 
 构建脚本按顺序定位 JDK（`tools/jdk-21` → `tools/jdk-17` → `$JAVA_HOME`），
 设置 `ANDROID_HOME` / `GRADLE_USER_HOME` / 代理（`GRADLE_OPTS`），
-执行 `gradle assembleDebug --no-daemon`，产物复制到 `apps/videonotes/`，
-命名 `<项目名>-debug-<versionName>.apk`（仅保留最新 3 个）。
+执行 `gradle <task> --no-daemon`，产物复制到 `apps/videonotes/`：
+- debug 包命名 `<项目名>-debug-<versionName>.apk`（仅保留最新 3 个）
+- release 包命名 `<项目名>-release-<versionName>-arm64.apk`（仅保留最新 3 个，带 R8 混淆）
+
+release 签名：`codes/keystores/videonotes-release.keystore`（chmod 600，仅本机保管，不进仓库），
+密码存在同目录 `videonotes-release.pass`（chmod 600），构建时自动读取；也可通过环境变量
+`RELEASE_STORE_PASSWORD` / `RELEASE_KEY_PASSWORD` 传入。
 
 单元测试：
 
