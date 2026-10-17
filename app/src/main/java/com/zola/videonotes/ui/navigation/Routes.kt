@@ -25,6 +25,9 @@ object Routes {
     /** B站登录页：内嵌 B站官方登录页，捕获 SESSDATA 后自动关闭。 */
     const val BILI_LOGIN = "bili_login"
 
+    /** 统一日志查看页：LLM 日志 / 转写日志，实时查看与导出。 */
+    const val LOG_VIEWER = "log_viewer"
+
     /** 元信息页参数：待解析的视频链接（分享文本亦可，解析器内部会提取 URL）。 */
     const val ARG_URL = "url"
 

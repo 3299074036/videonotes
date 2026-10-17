@@ -69,10 +69,22 @@ class CloudLlmEngine @Inject constructor(
             .getOrNull()?.takeIf { it.isNotBlank() } ?: "?"
         // 只记长度，不记正文
         val promptChars = messages.sumOf { it.content.length }
+        val systemChars = messages.firstOrNull { it.role == "system" }?.content?.length ?: 0
+        val userChars = messages.filter { it.role != "system" }.sumOf { it.content.length }
+        LlmDiagnosticLog.log(
+            context, "llm-cloud",
+            "prompt 构建完成：system=${systemChars}字符，user=${userChars}字符，合计约${promptChars / 2} tokens（估算）",
+        )
+        LlmDiagnosticLog.log(
+            context, "llm-cloud",
+            "调用模型：engine=云端($model)，host=$host",
+        )
         val diag = LlmStreamDiag()
         val t0 = SystemClock.elapsedRealtime()
         var ttftMs = -1L
         var receivedChars = 0
+        var tokenCount = 0
+        var nextLogAt = 500
         val result = llmClient.chatStream(
             baseUrl = baseUrl,
             apiKey = apiKey,
@@ -81,6 +93,11 @@ class CloudLlmEngine @Inject constructor(
             onToken = { token ->
                 if (ttftMs < 0) ttftMs = SystemClock.elapsedRealtime() - t0
                 receivedChars += token.length
+                tokenCount++
+                if (tokenCount >= nextLogAt) {
+                    LlmDiagnosticLog.log(context, "llm-cloud", "已输出 $tokenCount tokens…")
+                    nextLogAt += 500
+                }
                 onToken(token)
             },
             diag = diag,
@@ -99,6 +116,10 @@ class CloudLlmEngine @Inject constructor(
                     String.format(Locale.US, "%.1f", tps) + " tok/s"
                 Log.i(TAG, summary)
                 LlmDiagnosticLog.log(context, "llm-cloud", summary)
+                LlmDiagnosticLog.log(
+                    context, "llm-cloud",
+                    "输出完成：共 ${receivedChars} 字符，约 ${estTokens} tokens（估算），$tokenCount tokens 回调",
+                )
             },
             onFailure = { e ->
                 val summary = "generate 失败: model=$model, host=$host, " +

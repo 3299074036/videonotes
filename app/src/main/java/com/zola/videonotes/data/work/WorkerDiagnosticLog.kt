@@ -5,6 +5,9 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Worker 诊断日志：写到应用私有目录 `filesDir/diagnostic/worker.log`。
@@ -22,8 +25,14 @@ object WorkerDiagnosticLog {
     private const val DIR_NAME = "diagnostic"
     private const val FILE_NAME = "worker.log"
     private const val MAX_SIZE_BYTES = 256 * 1024L
+    private const val MAX_MEMORY_LINES = 100
 
     private val timeFormat = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
+
+    private val _logFlow = MutableStateFlow<List<String>>(emptyList())
+
+    /** 内存环形缓冲（最近 100 条），供日志查看页实时订阅。 */
+    val logFlow: StateFlow<List<String>> = _logFlow.asStateFlow()
 
     fun log(context: Context, tag: String, message: String) {
         try {
@@ -33,7 +42,11 @@ object WorkerDiagnosticLog {
                 file.writeText("")
             }
             val timestamp = synchronized(timeFormat) { timeFormat.format(Date()) }
-            file.appendText("[$timestamp][$tag] $message\n")
+            val line = "[$timestamp][$tag] $message"
+            file.appendText("$line\n")
+            synchronized(_logFlow) {
+                _logFlow.value = (_logFlow.value + line).takeLast(MAX_MEMORY_LINES)
+            }
         } catch (_: Exception) {
             // 日志本身永不影响业务
         }

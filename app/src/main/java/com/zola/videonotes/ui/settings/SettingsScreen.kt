@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Memory
@@ -49,6 +50,7 @@ fun SettingsScreen(
     onNavigateToModels: () -> Unit,
     onLicensesClick: () -> Unit,
     onBiliLoginClick: () -> Unit,
+    onNavigateToLogViewer: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val cacheSizeText by viewModel.cacheSizeText.collectAsStateWithLifecycle()
@@ -176,6 +178,24 @@ fun SettingsScreen(
                         Text("清理")
                     }
                 },
+            )
+            HorizontalDivider()
+            ListItem(
+                headlineContent = { Text("详细日志") },
+                supportingContent = { Text("LLM / 转写实时日志查看与导出") },
+                leadingContent = {
+                    Icon(
+                        imageVector = Icons.Filled.BugReport,
+                        contentDescription = null,
+                    )
+                },
+                trailingContent = {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                    )
+                },
+                modifier = Modifier.clickable { onNavigateToLogViewer() },
             )
             HorizontalDivider()
             ListItem(

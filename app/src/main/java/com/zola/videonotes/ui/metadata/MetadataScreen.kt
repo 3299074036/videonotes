@@ -92,6 +92,9 @@ fun MetadataScreen(
     val generateState by viewModel.generateState.collectAsStateWithLifecycle()
     val llmConfigured by viewModel.llmConfigured.collectAsStateWithLifecycle()
     val existingNoteId by viewModel.existingNoteId.collectAsStateWithLifecycle()
+    // 有字幕段（可生成笔记）时也允许切到课堂笔记 Tab
+    val hasTranscriptForTab = (subtitleState as? SubtitleUiState.Fetched)
+        ?.result?.segments?.isNotEmpty() == true
     // 实时日志流（本地/云端引擎共用 LlmDiagnosticLog.log，自动推送）
     val llmLogLines by LlmDiagnosticLog.logFlow.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -236,8 +239,9 @@ fun MetadataScreen(
                         selected = selectedTab == 1,
                         onClick = { selectedTab = 1 },
                         text = { Text("课堂笔记") },
-                        // 无笔记时默认禁用；生成中/失败时可点开，看进度 + 实时日志
+                        // 无笔记时默认禁用；有字幕/生成中/失败时可点开，看进度 + 实时日志
                         enabled = existingNoteId != null ||
+                            hasTranscriptForTab ||
                             generateState is GenerateNoteUiState.Working ||
                             generateState is GenerateNoteUiState.Failed,
                     )

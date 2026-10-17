@@ -15,7 +15,8 @@ project(videonotes_llama)
 if(DEFINED ENV{LLAMA_CPP_DIR} AND NOT "$ENV{LLAMA_CPP_DIR}" STREQUAL "")
     set(LLAMA_CPP_DIR "$ENV{LLAMA_CPP_DIR}")
 else()
-    set(LLAMA_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../dependencies/llama.cpp/llama.cpp-0.7.0")
+    # 2026-10-17: v0.7.0 在天玑 9400 上 prefill 首 batch hang，降级到 2026-09-14 的 v0.4.1 排查
+    set(LLAMA_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../dependencies/llama.cpp/llama.cpp-0.4.1")
 endif()
 
 if(NOT EXISTS "${LLAMA_CPP_DIR}/include/llama.h")
@@ -28,6 +29,10 @@ set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TOOLS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_COMMON   OFF CACHE BOOL "" FORCE)
+
+# 2026-10-17: prefill 在天玑 9400 上 hang，怀疑交叉编译时 ARM 特性检测错误。
+# 强制用 baseline ARMv8，不用任何扩展指令集（NEON 除外，ARMv8 标配）。
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 
 add_subdirectory("${LLAMA_CPP_DIR}" llama.cpp-build)
 

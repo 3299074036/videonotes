@@ -54,6 +54,13 @@ object LlamaCpp {
      */
     external fun lastPerfSummary(): String
 
+    /**
+     * 取走 JNI 桥接日志（llama.cpp 内部日志 + 关键诊断行，多行 `\n` 连接），
+     * 返回后 native 侧清空 buffer。Kotlin 侧在 loadModel/generate 结束后调用，
+     * 逐行写入 llm.log（App 内"详细日志"页可见）。无日志时返回空字符串。
+     */
+    external fun drainJniLogs(): String
+
     /** token 流式回调（native 线程调用）。 */
     interface TokenCallback {
         fun onToken(token: String)

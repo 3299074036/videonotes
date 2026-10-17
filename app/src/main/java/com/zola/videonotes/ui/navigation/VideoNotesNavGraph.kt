@@ -15,6 +15,7 @@ import com.zola.videonotes.ui.models.ModelManagementScreen
 import com.zola.videonotes.ui.notes.NoteDetailScreen
 import com.zola.videonotes.ui.player.PlayerScreen
 import com.zola.videonotes.ui.settings.LicensesScreen
+import com.zola.videonotes.ui.settings.LogViewerScreen
 
 /**
  * 全 App 导航图（UI 重设计 v2）。
@@ -49,6 +50,7 @@ fun VideoNotesNavGraph(
                 onNavigateToModels = { navController.navigate(Routes.MODEL_MANAGEMENT) },
                 onLicensesClick = { navController.navigate(Routes.LICENSES) },
                 onBiliLoginClick = { navController.navigate(Routes.BILI_LOGIN) },
+                onNavigateToLogViewer = { navController.navigate(Routes.LOG_VIEWER) },
             )
         }
         composable(
@@ -91,6 +93,7 @@ fun VideoNotesNavGraph(
                 onNavigateToModels = { navController.navigate(Routes.MODEL_MANAGEMENT) },
                 onLicensesClick = { navController.navigate(Routes.LICENSES) },
                 onBiliLoginClick = { navController.navigate(Routes.BILI_LOGIN) },
+                onNavigateToLogViewer = { navController.navigate(Routes.LOG_VIEWER) },
                 startTab = backStackEntry.arguments?.getString(Routes.ARG_START_TAB)
                     ?: "kb_home",
             )
@@ -103,6 +106,9 @@ fun VideoNotesNavGraph(
         }
         composable(Routes.MODEL_MANAGEMENT) {
             ModelManagementScreen(onBackClick = { navController.popBackStack() })
+        }
+        composable(Routes.LOG_VIEWER) {
+            LogViewerScreen(onBackClick = { navController.popBackStack() })
         }
         composable(
             route = Routes.NOTE_DETAIL_ROUTE,

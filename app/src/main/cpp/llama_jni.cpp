@@ -30,6 +30,37 @@
 #define LLM_TAG "VideoNotesLlm"
 #define LLM_LOGI(...) __android_log_print(ANDROID_LOG_INFO, LLM_TAG, __VA_ARGS__)
 
+// 关键诊断行：同时写 logcat 和 JNI 桥接 buffer（Kotlin 侧 drain 后写入 llm.log）
+#define LLM_LOGI_BRIDGE(...) do { \
+    __android_log_print(ANDROID_LOG_INFO, LLM_TAG, __VA_ARGS__); \
+    char _bridge_buf[2048]; \
+    std::snprintf(_bridge_buf, sizeof(_bridge_buf), __VA_ARGS__); \
+    bridge_log(_bridge_buf); \
+} while (0)
+
+#define LLM_CPP_TAG "VideoNotesLlmCpp"
+
+// llama.cpp 内部日志转发到 logcat（定位 decode 失败等 native 层错误用）
+// 同时桥接到 g_jni_log_buffer，供 Kotlin 侧 drain 后写入 llm.log（App 内可见）
+static void bridge_log(const char* line);
+
+static void llama_log_forward(enum ggml_log_level level, const char* text, void* /*user_data*/) {
+    if (!text || !*text) return;
+    int prio;
+    const char* levelTag;
+    switch (level) {
+        case GGML_LOG_LEVEL_ERROR: prio = ANDROID_LOG_ERROR; levelTag = "E"; break;
+        case GGML_LOG_LEVEL_WARN:  prio = ANDROID_LOG_WARN;  levelTag = "W"; break;
+        case GGML_LOG_LEVEL_DEBUG: prio = ANDROID_LOG_DEBUG; levelTag = "D"; break;
+        case GGML_LOG_LEVEL_INFO:
+        default:                   prio = ANDROID_LOG_INFO;  levelTag = "I"; break;  // CONT/NONE 按 INFO
+    }
+    __android_log_print(prio, LLM_CPP_TAG, "%s", text);
+    char line[2048];
+    std::snprintf(line, sizeof(line), "[llama.cpp][%s] %s", levelTag, text);
+    bridge_log(line);
+}
+
 // 稳态时钟毫秒（性能打点用，不受系统时间调整影响）
 inline int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -68,6 +99,12 @@ std::string g_last_perf;
 // prefill/decode 实时进度（Kotlin 侧经 lastProgress() 轮询，用于卡死时定位卡在第几个 batch）
 std::mutex g_prog_mu;
 std::string g_last_progress;
+
+// JNI 日志桥接 buffer：llama.cpp 内部日志 + 关键 LLM_LOGI 诊断行，
+// Kotlin 侧经 drainJniLogs() 取走后写入 llm.log（App 内"详细日志"页可见）
+std::mutex g_jni_log_mu;
+std::vector<std::string> g_jni_log_buffer;
+constexpr size_t kJniLogMaxLines = 200;
 
 void set_last_error(const char* msg) {
     std::lock_guard<std::mutex> lock(g_err_mu);
@@ -135,9 +172,18 @@ jlong load_impl(const char* path, int32_t n_ctx, int32_t n_threads) {
     h->n_ctx = llama_n_ctx(ctx);
     const int64_t load_ms = now_ms() - t0;
     const char* slash = std::strrchr(path, '/');
-    LLM_LOGI("[llm] loadModel: %s in %lldms (threads=%d, n_ctx=%u)",
+    LLM_LOGI_BRIDGE("[llm] loadModel: %s in %lldms (threads=%d, n_ctx=%u)",
              slash ? slash + 1 : path, (long long) load_ms,
              (int) cparams.n_threads, h->n_ctx);
+    // 关键参数：模型描述（含架构/参数量/量化类型）+ 上下文配置，供诊断用
+    {
+        char desc[256] = {0};
+        llama_model_desc(model, desc, sizeof(desc));
+        LLM_LOGI_BRIDGE("[llm] model info: %s", desc);
+        LLM_LOGI_BRIDGE("[llm] ctx params: n_ctx=%u, n_threads=%d, n_threads_batch=%d, type_k=%d, type_v=%d",
+                 h->n_ctx, (int) cparams.n_threads, (int) cparams.n_threads_batch,
+                 (int) cparams.type_k, (int) cparams.type_v);
+    }
     return (jlong) h;
 }
 
@@ -216,6 +262,9 @@ jint generate_impl(JNIEnv* env, LlamaHandle* h, const char* prompt_utf8,
     int32_t n_past = 0;
     int32_t n_gen = 0;  // 采样阶段成功 decode 的 token 数（生成速度口径）
 
+    LLM_LOGI_BRIDGE("[llm] generate start: n_prompt=%d, n_batch_max=%d, max_tokens=%d, temp=%.2f",
+             n_prompt, n_batch_max, max_tokens, temperature);
+
     // 5. prompt 分批 decode（每 batch 打一行，卡死时 logcat 最后一行即卡住位置）
     const int64_t t_pre0 = now_ms();
     const int32_t n_batches = (n_prompt + n_batch_max - 1) / n_batch_max;
@@ -233,18 +282,19 @@ jint generate_impl(JNIEnv* env, LlamaHandle* h, const char* prompt_utf8,
         const int32_t n_eval = std::min(n_batch_max, n_prompt - off);
         fill_batch(prompt_tokens.data() + off, n_eval, n_past);
         const int64_t t_b0 = now_ms();
-        if (llama_decode(h->ctx, batch) != 0) {
+        const int dec_ret = llama_decode(h->ctx, batch);
+        if (dec_ret != 0) {
             char msg[256];
             std::snprintf(msg, sizeof(msg),
-                "prompt 编码失败（prompt %d tokens，已处理 %d，可能内存不足）",
-                n_prompt, n_past);
+                "prompt 编码失败（ret=%d，prompt %d tokens，已处理 %d）",
+                dec_ret, n_prompt, n_past);
             set_last_error(msg);
             rc = 15;
             break;
         }
         n_past += n_eval;
         const int64_t batch_ms = now_ms() - t_b0;
-        LLM_LOGI("[llm] prefill batch %d/%d: %d tok in %lldms",
+        LLM_LOGI_BRIDGE("[llm] prefill batch %d/%d: %d tok in %lldms",
                  bi + 1, n_batches, n_eval, (long long) batch_ms);
         char prog[128];
         std::snprintf(prog, sizeof(prog), "prefill %d/%d batch, %d/%d tok",
@@ -282,8 +332,11 @@ jint generate_impl(JNIEnv* env, LlamaHandle* h, const char* prompt_utf8,
         }
         if (n_past + 1 >= (int32_t) h->n_ctx) break;  // 上下文用尽，正常结束
         fill_batch(&tok, 1, n_past);
-        if (llama_decode(h->ctx, batch) != 0) {
-            set_last_error("解码失败");
+        const int dec_ret = llama_decode(h->ctx, batch);
+        if (dec_ret != 0) {
+            char msg[128];
+            std::snprintf(msg, sizeof(msg), "解码失败（ret=%d）", dec_ret);
+            set_last_error(msg);
             rc = 15;
             break;
         }
@@ -304,7 +357,7 @@ jint generate_impl(JNIEnv* env, LlamaHandle* h, const char* prompt_utf8,
         n_gen, (long long) decode_ms, decode_tps,
         rc);
     set_last_perf(perf);
-    LLM_LOGI("%s", perf);
+    LLM_LOGI_BRIDGE("%s", perf);
 
     env->DeleteGlobalRef(cb_global);
     llama_batch_free(batch);
@@ -314,10 +367,21 @@ jint generate_impl(JNIEnv* env, LlamaHandle* h, const char* prompt_utf8,
 
 }  // namespace
 
+// JNI 日志桥接实现：写入环形 buffer，Kotlin 侧经 drainJniLogs() 取走写入 llm.log
+static void bridge_log(const char* line) {
+    if (!line || !*line) return;
+    std::lock_guard<std::mutex> lock(g_jni_log_mu);
+    if (g_jni_log_buffer.size() >= kJniLogMaxLines) {
+        g_jni_log_buffer.erase(g_jni_log_buffer.begin());
+    }
+    g_jni_log_buffer.emplace_back(line);
+}
+
 extern "C" {
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
     g_vm = vm;
+    llama_log_set(llama_log_forward, nullptr);
     llama_backend_init();
     return JNI_VERSION_1_6;
 }
@@ -425,6 +489,28 @@ Java_com_zola_videonotes_data_llm_local_LlamaCpp_lastProgress(
     try {
         std::lock_guard<std::mutex> lock(g_prog_mu);
         return env->NewStringUTF(g_last_progress.c_str());
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+// 取走 JNI 桥接日志（多行 \n 连接），返回后清空 buffer。
+// Kotlin 侧在 loadModel/generate 结束后调用，写入 llm.log（App 内可见）。
+JNIEXPORT jstring JNICALL
+Java_com_zola_videonotes_data_llm_local_LlamaCpp_drainJniLogs(
+        JNIEnv* env, jobject /*thiz*/) {
+    try {
+        std::lock_guard<std::mutex> lock(g_jni_log_mu);
+        if (g_jni_log_buffer.empty()) {
+            return env->NewStringUTF("");
+        }
+        std::string out;
+        for (size_t i = 0; i < g_jni_log_buffer.size(); ++i) {
+            if (i > 0) out += '\n';
+            out += g_jni_log_buffer[i];
+        }
+        g_jni_log_buffer.clear();
+        return env->NewStringUTF(out.c_str());
     } catch (...) {
         return nullptr;
     }

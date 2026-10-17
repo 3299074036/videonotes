@@ -87,6 +87,19 @@ class LocalLlmEngine @Inject constructor(
         }
 
         val prompt = buildPrompt(messages)
+        // prompt 构建完成：记 system/user 字符数与估算 token
+        val systemChars = messages.firstOrNull { it.role == "system" }?.content?.length ?: 0
+        val userChars = messages.filter { it.role != "system" }.sumOf { it.content.length }
+        val estTokens = (systemChars + userChars) / 2
+        LlmDiagnosticLog.log(
+            context, "llm",
+            "prompt 构建完成：system=${systemChars}字符，user=${userChars}字符，合计约${estTokens} tokens（估算）",
+        )
+        LlmDiagnosticLog.log(
+            context, "llm",
+            "调用模型：engine=本地(${prefs.currentModel().displayName})，" +
+                "maxTokens=$MAX_OUTPUT_TOKENS，temperature=$TEMPERATURE_LOCAL",
+        )
         val sb = StringBuilder()
         // 取消时通知 native 停止采样
         coroutineContext.job.invokeOnCompletion {
@@ -96,9 +109,17 @@ class LocalLlmEngine @Inject constructor(
             }
         }
         try {
+            var tokenCount = 0
+            var nextLogAt = 500
             val callback = object : LlamaCpp.TokenCallback {
                 override fun onToken(token: String) {
                     sb.append(token)
+                    tokenCount++
+                    // 每 500 token 记一行进度（避免每 token 都记太吵）
+                    if (tokenCount >= nextLogAt) {
+                        LlmDiagnosticLog.log(context, "llm", "已输出 $tokenCount tokens…")
+                        nextLogAt += 500
+                    }
                     onToken(token)
                 }
             }
@@ -124,10 +145,18 @@ class LocalLlmEngine @Inject constructor(
             val totalMs = SystemClock.elapsedRealtime() - t0
             // native 侧性能汇总（含 tokenize/prefill/decode 的 token 数与 tok/s），失败时也有部分数据
             val perf = runCatching { LlamaCpp.lastPerfSummary() }.getOrDefault("")
+            val outChars = sb.length
+            val estOutTokens = outChars / 2
             val summary = "generate 结束(rc=$rc): prompt=${prompt.length}字符, " +
-                "输出=${sb.length}字符, 总耗时=${totalMs}ms | $perf"
+                "输出=${outChars}字符，约${estOutTokens} tokens（估算）, 总耗时=${totalMs}ms | $perf"
             Log.i(TAG, summary)
             LlmDiagnosticLog.log(context, "llm", summary)
+            LlmDiagnosticLog.log(
+                context, "llm",
+                "输出完成：共 ${outChars} 字符，约 ${estOutTokens} tokens（估算），$tokenCount tokens 回调",
+            )
+            // 把 generate 阶段的 JNI 日志（prefill batch 进度 / llama.cpp 内部日志 / ret=）落盘
+            drainJniLogsToFile()
             ensureActive()
             if (rc != 0) {
                 return@withContext Result.failure(IOException(LlamaCpp.lastError()))
@@ -176,7 +205,8 @@ class LocalLlmEngine @Inject constructor(
                     )
                 }
             }
-            val nThreads = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
+            // 2026-10-17: prefill 在 8 线程下 hang，降到 4 线程排查是否为线程池问题
+            val nThreads = 4
             val t0 = SystemClock.elapsedRealtime()
             val h = LlamaCpp.loadModel(path, N_CTX, nThreads)
             val loadMs = SystemClock.elapsedRealtime() - t0
@@ -187,10 +217,25 @@ class LocalLlmEngine @Inject constructor(
                 "model=${path.substringAfterLast('/')})"
             Log.i(TAG, summary)
             LlmDiagnosticLog.log(context, "llm", summary)
+            // 把 loadModel 阶段的 JNI 日志（model info / ctx params / llama.cpp 内部日志）落盘
+            drainJniLogsToFile()
             handle = h
             loadedPath = path
             return h
         }
+    }
+
+    /**
+     * 取走 JNI 桥接日志并逐行写入 llm.log（tag `[llm-cpp]`）。
+     * 失败时静默忽略（不影响主流程）。
+     */
+    private fun drainJniLogsToFile() {
+        val raw = runCatching { LlamaCpp.drainJniLogs() }.getOrDefault("")
+        if (raw.isBlank()) return
+        raw.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .forEach { line -> LlmDiagnosticLog.log(context, "llm-cpp", line) }
     }
 
     /** Qwen3 chat template 组装 prompt。 */
