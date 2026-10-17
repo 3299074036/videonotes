@@ -1,0 +1,211 @@
+package com.zola.videonotes.ui.player
+
+import android.content.Intent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.net.toUri
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MergingMediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.ui.PlayerView
+import com.zola.videonotes.data.reader.DeepLinkBuilder
+import com.zola.videonotes.ui.theme.VideoNotesTokens
+import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * 站内播放器页（M6）：Media3 ExoPlayer + PlayerView。
+ *
+ * - B站直链 headers（Referer + UA）经 DefaultHttpDataSource 注入；
+ * - 打开时 seek 到传入的起始秒数（pill 跳转）；
+ * - ON_PAUSE 自动暂停，离开页面释放播放器；
+ * - 直链失败（如 YouTube 限流/403）时提供重试与"用浏览器打开"回退；
+ * - B站音视频合并播放时，音频流失败自动回退到纯视频（防 MergingMediaSource 整源失败黑屏）。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PlayerScreen(
+    onBackClick: () -> Unit,
+    viewModel: PlayerViewModel = hiltViewModel(),
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("视频播放") },
+                navigationIcon = {
+                    IconButton(onClick = onBackClick) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "返回",
+                        )
+                    }
+                },
+            )
+        },
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+        ) {
+            when (val state = uiState) {
+                is PlayerUiState.Loading -> PlayerLoadingView(message = "正在加载视频…")
+                is PlayerUiState.Failed -> PlayerErrorView(
+                    message = state.message,
+                    onRetry = { viewModel.load() },
+                    onOpenInBrowser = {
+                        DeepLinkBuilder.build(viewModel.storageKey, viewModel.startSeconds)
+                            ?.let { link ->
+                                context.startActivity(Intent(Intent.ACTION_VIEW, link.toUri()))
+                            }
+                    },
+                )
+                is PlayerUiState.Ready -> {
+                    val exoPlayer = remember(state.stream.url, state.stream.audioUrl) {
+                        val dataSourceFactory = DefaultHttpDataSource.Factory()
+                            .setDefaultRequestProperties(state.stream.headers)
+                        // B站 DASH 音视频分离：视频流无音频轨，用 MergingMediaSource
+                        // 把独立音频流合成进来，否则有画面无声音。
+                        val mediaSourceFactory = DefaultMediaSourceFactory(context)
+                            .setDataSourceFactory(dataSourceFactory)
+                        val videoItem = MediaItem.fromUri(state.stream.url)
+                        val audioUrl = state.stream.audioUrl
+                        // 音频流（403/过期）一旦失败会拖垮整个合并源导致黑屏；
+                        // 降级开关：失败一次后自动回退到纯视频，保证有画面。
+                        val audioFallbackDone = AtomicBoolean(false)
+                        ExoPlayer.Builder(context)
+                            .setMediaSourceFactory(mediaSourceFactory)
+                            .build()
+                            .apply {
+                                if (audioUrl != null) {
+                                    val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+                                        .createMediaSource(videoItem)
+                                    val audioSource = ProgressiveMediaSource.Factory(dataSourceFactory)
+                                        .createMediaSource(MediaItem.fromUri(audioUrl))
+                                    setMediaSource(MergingMediaSource(videoSource, audioSource))
+                                } else {
+                                    setMediaItem(videoItem)
+                                }
+                                addListener(object : Player.Listener {
+                                    override fun onPlayerError(error: PlaybackException) {
+                                        if (audioUrl != null && audioFallbackDone.compareAndSet(false, true)) {
+                                            val resumePosition = currentPosition
+                                            setMediaItem(videoItem)
+                                            prepare()
+                                            if (resumePosition > 0) seekTo(resumePosition)
+                                            playWhenReady = true
+                                        }
+                                    }
+                                })
+                                prepare()
+                                if (viewModel.startSeconds > 0) {
+                                    seekTo(viewModel.startSeconds * 1000)
+                                }
+                                playWhenReady = true
+                            }
+                    }
+                    val lifecycleOwner = LocalLifecycleOwner.current
+                    DisposableEffect(lifecycleOwner, exoPlayer) {
+                        val observer = LifecycleEventObserver { _, event ->
+                            if (event == Lifecycle.Event.ON_PAUSE) exoPlayer.pause()
+                        }
+                        lifecycleOwner.lifecycle.addObserver(observer)
+                        onDispose {
+                            lifecycleOwner.lifecycle.removeObserver(observer)
+                            exoPlayer.release()
+                        }
+                    }
+                    AndroidView(
+                        factory = { ctx ->
+                            PlayerView(ctx).apply {
+                                player = exoPlayer
+                                useController = true
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 加载中占位。 */
+@Composable
+private fun PlayerLoadingView(message: String) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            androidx.compose.material3.CircularProgressIndicator()
+            Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
+            Text(message, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+/**
+ * 加载失败：中文原因 + 重试 + "用浏览器打开"回退
+ * （直链可能被限流/403 时走 deep link）。
+ */
+@Composable
+private fun PlayerErrorView(
+    message: String,
+    onRetry: () -> Unit,
+    onOpenInBrowser: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(VideoNotesTokens.Space24),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+    ) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space16))
+        Button(onClick = onRetry) {
+            Text("重试")
+        }
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
+        OutlinedButton(onClick = onOpenInBrowser) {
+            Text("用浏览器打开")
+        }
+    }
+}

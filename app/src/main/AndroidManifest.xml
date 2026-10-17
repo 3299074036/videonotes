@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 视记 AndroidManifest：解析视频链接需要联网；allowBackup=false 保证卸载重装后用户数据清理干净 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 判断 Wi-Fi / 移动数据（模型下载的"仅 Wi-Fi"开关用），普通权限，安装时自动授予 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- M6：长任务（转写/笔记生成）以前台服务方式在后台继续执行 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- API 34+ 前台服务类型 dataSync 声明；低版本声明无害 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <application
+        android:name=".VideoNotesApp"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.VideoNotes"
+        android:allowBackup="false"
+        android:supportsRtl="true">
+
+        <!-- M6：VideoNotesApp 实现 Configuration.Provider（注入 HiltWorkerFactory），
+             必须移除 WorkManager 的默认自动初始化，否则 lint 报 RemoveWorkManagerInitializer -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="remove" />
+
+        <!-- WorkManager 前台服务的类型声明：setForeground(FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+             时系统要求 service 元素必须声明 dataSync，否则抛 IllegalArgumentException
+             直接杀进程（闪退），且异常发生在系统服务线程、try-catch 罩不住。
+             WorkManager 库自带声明但无类型，此处 merge 补上。 -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- 从系统分享菜单接收视频链接：分享文本进入解析流程 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

@@ -1,0 +1,9 @@
+# 视记课堂笔记 Prompt v1（M4）
+# 单遍生成 user prompt 模板。占位符：{title} {duration} {transcript}
+
+视频标题：{title}
+视频时长：{duration}
+
+以下是视频文稿（格式为 [mm:ss] 文本），请按 system prompt 的要求生成课堂笔记：
+
+{transcript}

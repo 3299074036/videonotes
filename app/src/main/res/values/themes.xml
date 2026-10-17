@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 系统层主题仅作启动底，UI 全部由 Compose 的 VideoNotesTheme 接管 -->
+    <style name="Theme.VideoNotes" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
