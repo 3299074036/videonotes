@@ -37,7 +37,7 @@ fun MainScreen(
     onNavigateToModels: () -> Unit,
     onLicensesClick: () -> Unit,
     onBiliLoginClick: () -> Unit,
-    onNavigateToLogViewer: () -> Unit,
+    onNavigateToOps: () -> Unit,
     startTab: String = MainTab.KNOWLEDGE.route,
 ) {
     val tabNavController = rememberNavController()
@@ -90,7 +90,7 @@ fun MainScreen(
                     onNavigateToModels = onNavigateToModels,
                     onLicensesClick = onLicensesClick,
                     onBiliLoginClick = onBiliLoginClick,
-                    onNavigateToLogViewer = onNavigateToLogViewer,
+                    onNavigateToOps = onNavigateToOps,
                 )
             }
         }

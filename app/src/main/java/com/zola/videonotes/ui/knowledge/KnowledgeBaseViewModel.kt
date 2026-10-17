@@ -54,7 +54,7 @@ data class KnowledgeEntry(
         get() = when {
             isGenerating && generateProgress >= 0 -> generateProgress
             isTranscribing && transcribeProgress >= 0 -> transcribeProgress
-            isGenerating || isTranscribing -> 0f // 不确定进度时显示旋转
+            // 进度未知时不显示假的 0%，只留状态 pill（生成中的字数在 generateStage 里）
             else -> null
         }
 }

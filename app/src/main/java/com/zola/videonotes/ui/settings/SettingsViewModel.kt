@@ -5,6 +5,8 @@ import android.webkit.CookieManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.zola.videonotes.data.auth.BiliAuthStore
+import com.zola.videonotes.data.asr.ModelDownloadManager
+import com.zola.videonotes.data.llm.local.LocalModelDownloadManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -30,6 +32,8 @@ import kotlin.math.pow
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val biliAuthStore: BiliAuthStore,
+    private val llmDownloadManager: LocalModelDownloadManager,
+    private val asrDownloadManager: ModelDownloadManager,
 ) : ViewModel() {
 
     private val _cacheSizeText = MutableStateFlow("计算中…")
@@ -55,16 +59,19 @@ class SettingsViewModel @Inject constructor(
         refreshSizes()
     }
 
-    /** 重新计算大小（清理后调用）。模型目录含 ASR（models/）与 LLM（llm_models/）。 */
+    /** 重新计算大小（清理后调用）。模型大小走下载管理器元数据（与模型管理页一致）。 */
     fun refreshSizes() {
         viewModelScope.launch {
-            val (cache, models) = withContext(Dispatchers.IO) {
-                dirSize(context.cacheDir) to
-                    (dirSize(File(context.filesDir, "models")) +
-                        dirSize(File(context.filesDir, "llm_models")))
-            }
+            val cache = withContext(Dispatchers.IO) { dirSize(context.cacheDir) }
+            // 与模型管理页同一口径：已完成下载的模型字节数之和
+            val llmBytes = llmDownloadManager.states.value.values
+                .filter { it.status == LocalModelDownloadManager.DlStatus.COMPLETED }
+                .sumOf { it.downloadedBytes }
+            val asrBytes = asrDownloadManager.states.value.values
+                .filter { it.status == ModelDownloadManager.DlStatus.COMPLETED }
+                .sumOf { it.downloadedBytes }
             _cacheSizeText.value = formatBytes(cache)
-            _modelStorageText.value = formatBytes(models)
+            _modelStorageText.value = formatBytes(llmBytes + asrBytes)
         }
     }
 

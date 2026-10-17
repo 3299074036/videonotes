@@ -234,10 +234,11 @@ private fun LlmTabContent(
             ) {
                 Text(
                     text = buildString {
-                        append("本地模式无需 API Key，断网可用。")
                         if (currentModel != null) {
                             append("当前：${currentModel.displayName}")
-                            append(if (downloaded) "（已下载 ✓）" else "（未下载）")
+                            append(if (downloaded) "（已下载）" else "（未下载）")
+                        } else {
+                            append("本地模式，断网可用")
                         }
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -412,8 +413,7 @@ private fun LocalModelSection(
         verticalArrangement = Arrangement.spacedBy(VideoNotesTokens.Space12),
     ) {
         Text(
-            text = "模型下载到本机后，笔记生成全程离线，不上传任何数据。" +
-                "本地模型较大（1–3GB），仅支持 Wi-Fi 下载。生成速度取决于手机性能。",
+            text = "离线生成，不上传数据。仅支持 Wi-Fi 下载。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

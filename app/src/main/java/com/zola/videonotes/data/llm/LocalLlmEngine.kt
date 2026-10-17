@@ -48,7 +48,12 @@ class LocalLlmEngine @Inject constructor(
 
     override val chunkTokens: Int = CHUNK_TOKENS_LOCAL
 
-    override val systemPromptAsset: String = "system_note_local.txt"
+    override val systemPromptAsset: String
+        // 小模型（1.7B 及以下）用简化版 prompt（指令更短 + 示例），大模型用完整版
+        get() = when (cachedModelId) {
+            "qwen3-1_7b", "llama3_2-1b" -> "system_note_local_small.txt"
+            else -> "system_note_local.txt"
+        }
 
     override val modelLabel: String
         get() = "本地模型"
@@ -59,6 +64,10 @@ class LocalLlmEngine @Inject constructor(
     /** 已加载的模型文件绝对路径（用于检测切换）。 */
     private var loadedPath: String? = null
 
+    /** 当前模型 ID 缓存（checkReady/chatStream 中更新，供 systemPromptAsset 同步读取）。 */
+    @Volatile
+    private var cachedModelId: String = "qwen3-4b"
+
     private val lock = Any()
 
     /** 诊断专用单线程：probe hang 时只卡住这一个线程，不污染 Default/IO 池。 */
@@ -68,6 +77,7 @@ class LocalLlmEngine @Inject constructor(
 
     override suspend fun checkReady(): Result<Unit> {
         val model = prefs.currentModel()
+        cachedModelId = model.id
         return if (prefs.isModelReady(model)) {
             Result.success(Unit)
         } else {
@@ -80,6 +90,7 @@ class LocalLlmEngine @Inject constructor(
         onToken: (String) -> Unit,
     ): Result<String> = withContext(Dispatchers.Default) {
         val model = prefs.currentModel()
+        cachedModelId = model.id
         val file = prefs.modelFile(model)
         if (!prefs.isModelReady(model)) {
             return@withContext Result.failure(IOException("本地模型「${model.displayName}」尚未下载"))
@@ -236,9 +247,8 @@ class LocalLlmEngine @Inject constructor(
             LlmDiagnosticLog.log(context, "llm", "[诊断] 方案A 结论：$msg")
             return@withContext Result.failure(IOException(msg))
         }
-        val verdict = "单 token decode 成功（${ms}ms）：decode 本身正常，" +
-            "hang 与 batch 大小/数量相关。建议继续方案 B（换 Llama 3.2 1B 对照）。"
-        LlmDiagnosticLog.log(context, "llm", "[诊断] 方案A 结论：$verdict")
+        val verdict = "诊断通过 · ${ms}ms"
+        LlmDiagnosticLog.log(context, "llm", "[诊断] 方案A 结论：单 token decode 成功（${ms}ms）")
         Result.success(verdict)
     }
 
@@ -276,11 +286,11 @@ class LocalLlmEngine @Inject constructor(
             val label: String,
         )
         val cases = listOf(
-            Case(4, 2048, 8, 0, "用例1 4线程/8tok/ctx2048（基线）"),
-            Case(1, 2048, 8, 0, "用例2 1线程/8tok/ctx2048（线程池对照）"),
-            Case(4, 2048, 64, 0, "用例3 4线程/64tok/ctx2048（batch 放大）"),
-            Case(4, 8192, 64, 0, "用例4 4线程/64tok/ctx8192（封装层同款 n_ctx）"),
-            Case(4, 2048, 8, 1, "用例5 4线程/8tok/ctx2048（绑定大核cpu4-7）"),
+            Case(4, 2048, 8, 0, "用例1 · 4线程/8tok"),
+            Case(1, 2048, 8, 0, "用例2 · 1线程/8tok"),
+            Case(4, 2048, 64, 0, "用例3 · 4线程/64tok"),
+            Case(4, 8192, 64, 0, "用例4 · 4线程/64tok/ctx8192"),
+            Case(4, 2048, 8, 1, "用例5 · 绑大核/8tok"),
         )
         val sb = StringBuilder()
         for (c in cases) {
@@ -313,8 +323,8 @@ class LocalLlmEngine @Inject constructor(
                 LlmDiagnosticLog.log(context, "llm", "[诊断] 方案C $msg")
                 sb.appendLine(msg)
             } else {
-                val msg = "${c.label}：✅ 成功（${ms}ms，native 日志有精确 tok/s）"
-                LlmDiagnosticLog.log(context, "llm", "[诊断] 方案C $msg")
+                val msg = "${c.label} · ✅ ${ms}ms"
+                LlmDiagnosticLog.log(context, "llm", "[诊断] 方案C ${c.label}：成功（${ms}ms）")
                 sb.appendLine(msg)
             }
         }

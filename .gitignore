@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+build/
+
+# Android
+local.properties
+*.iml
+.idea/
+
+# NDK / CMake
+.cxx/
+app/.cxx/
+app/build/
+
+# Keystore (never commit)
+/codes/keystores/
+*.jks
+*.keystore
+
+# OS
+.DS_Store
+Thumbs.db

@@ -5,8 +5,6 @@ import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.zola.videonotes.data.llm.LocalLlmEngine
-import com.zola.videonotes.data.llm.local.LlmDiagnosticLog
-import com.zola.videonotes.data.llm.local.WorkerDiagnosticLog
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -81,7 +79,7 @@ class OpsDiagnosticsViewModel @Inject constructor(
             _probeResult.value = null
             try {
                 localLlmEngine.runMinimalNativeProbe()
-                    .onSuccess { _probeResult.value = "✅ 完成：\n$it" }
+                    .onSuccess { _probeResult.value = it }
                     .onFailure { e -> _probeResult.value = "❌ ${e.message ?: "诊断失败"}" }
             } catch (e: CancellationException) {
                 throw e
@@ -91,11 +89,5 @@ class OpsDiagnosticsViewModel @Inject constructor(
                 _probing.value = false
             }
         }
-    }
-
-    /** 清空诊断日志（文件 + 内存）。 */
-    fun clearLogs() {
-        LlmDiagnosticLog.clear(context)
-        WorkerDiagnosticLog.clear(context)
     }
 }

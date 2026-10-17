@@ -351,7 +351,11 @@ private fun KnowledgeEntryCard(
                     }
                     when {
                         entry.noteId != null -> StatusPill(text = "✓ 笔记", done = true)
-                        entry.isGenerating -> StatusPill(text = "⟳ 笔记生成中", done = false)
+                        entry.isGenerating -> StatusPill(
+                            // 生成中显示实时字数（Worker 上报），无字数时回退到默认文案
+                            text = entry.generateStage.ifBlank { "⟳ 笔记生成中" },
+                            done = false,
+                        )
                         entry.isTranscribing -> StatusPill(text = "⟳ 语音转写中", done = false)
                         else -> StatusPill(text = "笔记未生成", done = false, idle = true)
                     }

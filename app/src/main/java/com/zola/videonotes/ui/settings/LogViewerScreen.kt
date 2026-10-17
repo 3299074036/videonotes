@@ -18,8 +18,10 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -58,6 +60,9 @@ fun LogViewerScreen(
     val llmFlowLines by LlmDiagnosticLog.logFlow.collectAsStateWithLifecycle()
     val workerFlowLines by WorkerDiagnosticLog.logFlow.collectAsStateWithLifecycle()
 
+    // 日志级别过滤：默认只看核心（排查期的详细采样日志默认隐藏）
+    var showDetailed by remember { mutableStateOf(false) }
+
     // 文件全文（冷启动时读一次；实时增量走 flow）
     var llmFileLines by remember { mutableStateOf<List<String>>(emptyList()) }
     var workerFileLines by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -66,11 +71,12 @@ fun LogViewerScreen(
         workerFileLines = readLogFile(WorkerDiagnosticLog.logFile(context))
     }
 
-    // 混排：文件 + flow 去重，按时间戳排序，取最近 800 行
-    val displayLines = remember(llmFileLines, workerFileLines, llmFlowLines, workerFlowLines) {
+    // 混排：文件 + flow 去重，按时间戳排序，取最近 800 行；按级别过滤
+    val displayLines = remember(llmFileLines, workerFileLines, llmFlowLines, workerFlowLines, showDetailed) {
         (llmFileLines + workerFileLines + llmFlowLines + workerFlowLines)
             .distinct()
             .sortedWith(compareBy { extractTimestampMs(it) })
+            .filter { showDetailed || !isDetailedLog(it) }
             .takeLast(800)
     }
     val listState = rememberLazyListState()
@@ -90,6 +96,13 @@ fun LogViewerScreen(
                     }
                 },
                 actions = {
+                    // 日志级别切换：核心（默认）/ 全部（含排查期详细采样）
+                    TextButton(onClick = { showDetailed = !showDetailed }) {
+                        Text(
+                            text = if (showDetailed) "全部" else "核心",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
                     IconButton(
                         onClick = {
                             val text = displayLines.joinToString("\n")
@@ -209,4 +222,16 @@ private fun logLineColor(line: String): Color {
             Color(0xFFFBBF24)
         else -> Color(0xFFB8C4E8)
     }
+}
+
+/**
+ * 是否为排查期详细日志（默认隐藏）。
+ * 匹配：cprobe 探针采样、CPU 频率/thermal/membw 采样、mid-* 中途采样等。
+ */
+private fun isDetailedLog(line: String): Boolean {
+    return line.contains("[cprobe]") ||
+        line.contains("cpu_freq(") ||
+        line.contains("thermal(") ||
+        line.contains("membw") ||
+        line.contains("(mid-")
 }

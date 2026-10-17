@@ -17,7 +17,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.BugReport
-import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Speed
@@ -33,7 +32,6 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -106,11 +104,6 @@ fun OpsDiagnosticsScreen(
                                 style = MaterialTheme.typography.titleSmall,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer,
                             )
-                            Text(
-                                text = "验证 decode 通路是否正常",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            )
                         }
                         Button(
                             onClick = viewModel::runSingleTokenProbe,
@@ -141,11 +134,6 @@ fun OpsDiagnosticsScreen(
                                 style = MaterialTheme.typography.titleSmall,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer,
                             )
-                            Text(
-                                text = "绕开封装直测 llama.cpp，5 用例覆盖线程数 / 上下文 / 大核绑定",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            )
                         }
                         Button(
                             onClick = viewModel::runMinimalProbe,
@@ -169,11 +157,60 @@ fun OpsDiagnosticsScreen(
                     }
                     probeResult?.let { result ->
                         Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = result,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        )
+                        // 结果按行拆开展示（最小化测试的 5 用例各占一行）
+                        val lines = result.split("\n").filter { it.isNotBlank() }
+                        if (lines.size == 1) {
+                            // 单 token 诊断：单行直接显示
+                            Text(
+                                text = lines[0],
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                        } else {
+                            // 最小化测试：表格样式
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface,
+                                ),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                                    lines.forEachIndexed { index, line ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 8.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            // 格式："用例1 · 4线程/8tok · ✅ 1017ms"
+                                            val parts = line.split("·").map { it.trim() }
+                                            Text(
+                                                text = parts.getOrNull(0) ?: line,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                modifier = Modifier.weight(1f),
+                                            )
+                                            Text(
+                                                text = parts.getOrNull(1) ?: "",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.padding(horizontal = 8.dp),
+                                            )
+                                            Text(
+                                                text = parts.getOrNull(2) ?: "",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.primary,
+                                            )
+                                        }
+                                        if (index < lines.size - 1) {
+                                            HorizontalDivider(
+                                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -200,22 +237,6 @@ fun OpsDiagnosticsScreen(
                 modifier = Modifier.clickable { onNavigateToLogViewer() },
             )
             HorizontalDivider()
-            ListItem(
-                headlineContent = { Text("清空日志") },
-                supportingContent = { Text("清除文件与内存中的诊断日志") },
-                leadingContent = {
-                    Icon(
-                        imageVector = Icons.Filled.CleaningServices,
-                        contentDescription = null,
-                    )
-                },
-                trailingContent = {
-                    TextButton(onClick = viewModel::clearLogs) {
-                        Text("清空")
-                    }
-                },
-            )
-
             Spacer(modifier = Modifier.height(16.dp))
 
             // ---------- 设备信息 ----------
