@@ -5,7 +5,9 @@ import androidx.work.ListenableWorker
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
 import com.zola.videonotes.data.asr.TranscribeAudioUseCase
+import com.zola.videonotes.data.llm.LlmEngineResolver
 import com.zola.videonotes.data.llm.NoteGenerator
+import com.zola.videonotes.data.pipeline.GenerateCrashGuard
 import javax.inject.Inject
 import javax.inject.Provider
 import javax.inject.Singleton
@@ -26,6 +28,8 @@ import javax.inject.Singleton
 class VideoNotesWorkerFactory @Inject constructor(
     private val transcribeAudioUseCase: Provider<TranscribeAudioUseCase>,
     private val noteGenerator: Provider<NoteGenerator>,
+    private val engineResolver: Provider<LlmEngineResolver>,
+    private val crashGuard: Provider<GenerateCrashGuard>,
 ) : WorkerFactory() {
 
     override fun createWorker(
@@ -39,7 +43,13 @@ class VideoNotesWorkerFactory @Inject constructor(
                 TranscribeWorker::class.java.name ->
                     TranscribeWorker(appContext, workerParameters, transcribeAudioUseCase.get())
                 GenerateNoteWorker::class.java.name ->
-                    GenerateNoteWorker(appContext, workerParameters, noteGenerator.get())
+                    GenerateNoteWorker(
+                        appContext,
+                        workerParameters,
+                        noteGenerator.get(),
+                        engineResolver.get(),
+                        crashGuard.get(),
+                    )
                 else -> null
             }
             WorkerDiagnosticLog.log(

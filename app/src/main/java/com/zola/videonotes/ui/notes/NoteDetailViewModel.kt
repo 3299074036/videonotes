@@ -3,6 +3,8 @@ package com.zola.videonotes.ui.notes
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.zola.videonotes.data.local.VideoDao
+import com.zola.videonotes.data.local.VideoEntity
 import com.zola.videonotes.data.notes.NoteRepository
 import com.zola.videonotes.domain.model.Note
 import com.zola.videonotes.ui.navigation.Routes
@@ -27,6 +29,7 @@ sealed interface NoteDetailUiState {
 @HiltViewModel
 class NoteDetailViewModel @Inject constructor(
     private val noteRepository: NoteRepository,
+    private val videoDao: VideoDao,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -34,6 +37,10 @@ class NoteDetailViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow<NoteDetailUiState>(NoteDetailUiState.Loading)
     val uiState: StateFlow<NoteDetailUiState> = _uiState.asStateFlow()
+
+    /** 关联的原视频（详情页顶部「原视频行」用：封面 / 作者 / 时长；只读查询）。 */
+    private val _video = MutableStateFlow<VideoEntity?>(null)
+    val video: StateFlow<VideoEntity?> = _video.asStateFlow()
 
     init {
         reload()
@@ -46,6 +53,9 @@ class NoteDetailViewModel @Inject constructor(
                 NoteDetailUiState.Ready(note)
             } else {
                 NoteDetailUiState.Error("笔记不存在或已被删除")
+            }
+            _video.value = note?.let {
+                runCatching { videoDao.getByStorageKey(it.videoStorageKey) }.getOrNull()
             }
         }
     }

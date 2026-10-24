@@ -55,7 +55,7 @@ import com.zola.videonotes.ui.theme.VideoNotesTokens
  *
  * 放在"视频信息"Tab 的生成卡片下方，只在生成中显示。
  * 订阅 [com.zola.videonotes.data.llm.local.LlmDiagnosticLog.logFlow]，
- * 显示最近 50 行，自动滚到底，标题栏可折叠。
+ * 显示最近 50 行，自动滚到底，标题栏可折叠（默认折叠，点标题展开）。
  */
 @Composable
 fun RealtimeLogPanel(
@@ -63,7 +63,7 @@ fun RealtimeLogPanel(
     isRunning: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    var expanded by remember { mutableStateOf(true) }
+    var expanded by remember { mutableStateOf(false) }
     val displayLines = remember(lines) { lines.takeLast(50) }
     val listState = rememberLazyListState()
     val context = LocalContext.current

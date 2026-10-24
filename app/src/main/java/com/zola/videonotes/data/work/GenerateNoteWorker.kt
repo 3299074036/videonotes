@@ -4,8 +4,13 @@ import android.content.Context
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.zola.videonotes.data.llm.GenerateStage
+import com.zola.videonotes.data.llm.LlmEngineResolver
+import com.zola.videonotes.data.llm.LlmEngineType
 import com.zola.videonotes.data.llm.NoteGenerator
 import com.zola.videonotes.data.llm.local.LlmDiagnosticLog
+import com.zola.videonotes.data.pipeline.GENERATE_CRASH_BREAKER_MESSAGE
+import com.zola.videonotes.data.pipeline.GenerateCrashGuard
+import com.zola.videonotes.domain.model.storageKey
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CancellationException
@@ -19,12 +24,18 @@ import kotlinx.coroutines.launch
  *
  * - 前台服务 + 进度通知，退后台后由 WorkManager 继续；
  * - 成功输出 [KEY_NOTE_ID]；限流/超时走 Result.retry()，其余失败输出 [KEY_ERROR]；
+ *   retry 只对云端引擎：本地生成的失败不在 Worker 层退避重试
+ *   （原生崩溃靠 [GenerateCrashGuard] 计数熔断，不靠 WorkManager 退避复活）；
+ * - 本地引擎生成全程受崩溃熔断守卫：进入前置位死亡标记，正常返回后清除，
+ *   连续死亡达上限时直接失败停步（[GENERATE_CRASH_BREAKER_MESSAGE]）；
  * - 用户取消时协程取消，原样抛出。
  */
 class GenerateNoteWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted params: WorkerParameters,
     private val noteGenerator: NoteGenerator,
+    private val engineResolver: LlmEngineResolver,
+    private val crashGuard: GenerateCrashGuard,
 ) : LongTaskWorker(appContext, params) {
 
     override fun notificationTitle(): String = "笔记生成"
@@ -42,6 +53,28 @@ class GenerateNoteWorker @AssistedInject constructor(
         diag("safeSetForeground(准备中)")
         safeSetForeground("准备中…", -1f)
         diag("safeSetForeground done")
+
+        // 崩溃熔断守卫（仅本地引擎）：登记上次死亡 → 达上限直接熔断停步；
+        // 未熔断则置位死亡标记，generate() 正常返回后清除（见下方结果处理）。
+        // 云端引擎不杀进程、不需要守卫。
+        // 注：本段必须在 reporter 协程启动之前——熔断早退时 coroutineScope
+        // 需等待子协程结束，reporter 不取消会死等。
+        val storageKey = video.storageKey()
+        val isLocalEngine =
+            engineResolver.effectiveEngineTypeNow() == LlmEngineType.LOCAL
+        var guardArmed = false
+        if (isLocalEngine) {
+            val deaths = crashGuard.registerStart(storageKey)
+            if (deaths >= GenerateCrashGuard.MAX_CONSECUTIVE_DEATHS) {
+                diag("crash breaker tripped: consecutiveDeaths=$deaths")
+                llmLog("Worker：本地生成已连续 $deaths 次在生成中途中断（疑似原生崩溃），熔断停步，不再自动重试")
+                return@coroutineScope Result.failure(
+                    workDataOf(KEY_ERROR to GENERATE_CRASH_BREAKER_MESSAGE),
+                )
+            }
+            crashGuard.markInProgress(storageKey)
+            guardArmed = true
+        }
 
         val progressState = MutableStateFlow(Triple("", -1f, 0L))
         var lastStage = ""
@@ -68,6 +101,15 @@ class GenerateNoteWorker @AssistedInject constructor(
                 progressState.value = Triple(formatStageText(stage, receivedChars), -1f, seq++)
             }
             diag("generate returned: success=${result.isSuccess}")
+            // generate() 正常返回 = 本次进程存活：成功清零死亡计数，
+            // 已处理的失败只清死亡标记（不算死亡、也不清计数）
+            if (guardArmed) {
+                if (result.isSuccess) {
+                    crashGuard.onGenerateSuccess(storageKey)
+                } else {
+                    crashGuard.clearInProgress(storageKey)
+                }
+            }
             result.fold(
                 onSuccess = { note ->
                     diag("success: noteId=${note.id}")
@@ -79,7 +121,7 @@ class GenerateNoteWorker @AssistedInject constructor(
                         ?: "${e.javaClass.simpleName}（无详细信息），请重试"
                     diag("failure: $msg")
                     llmLog("Worker：失败，错误=$msg")
-                    if (isRetryable(msg)) {
+                    if (!isLocalEngine && isRetryable(msg)) {
                         // 同 TranscribeWorker：重试耗尽后 outputData 为空，暂存到 progress 避免错误丢失。
                         setProgress(workDataOf(KEY_STAGE to "准备重试…", KEY_PROGRESS to -1f, KEY_ERROR to msg))
                         Result.retry()
@@ -89,9 +131,12 @@ class GenerateNoteWorker @AssistedInject constructor(
                 },
             )
         } catch (e: CancellationException) {
+            // 取消是已处理落点（进程存活）：清死亡标记，避免被下次误记为死亡
+            if (guardArmed) runCatching { crashGuard.clearInProgress(storageKey) }
             diag("cancelled")
             throw e
         } catch (t: Throwable) {
+            if (guardArmed) runCatching { crashGuard.clearInProgress(storageKey) }
             diag("caught: ${t.javaClass.simpleName}: ${t.message}")
             Result.failure(workDataOf(KEY_ERROR to "生成失败：${t.message ?: t.javaClass.simpleName}"))
         } finally {

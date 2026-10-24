@@ -9,8 +9,12 @@ import kotlin.math.roundToLong
  * 规则：
  * - 按标点 。！？；.!? 分句（token 尾字符命中即分句）
  * - 单段超过 [MAX_SEGMENT_MS]（30 秒）时强制截断，避免超长段
- * - 空白 token 与特殊 token（<|...|>）跳过
+ * - 空白 token 与特殊 token（<|...|>，以及 Dolphin 的语言/方言标签 <...> 形）跳过
+ * - bbpe 子词的 ▁ 词界标记归一为空格（Zipformer-CTC / Transducer 的 bbpe 解码用，
+ *   与 Whisper BPE 处理同类；中文单字 token 不受影响）
  * - 时间戳缺失（全 0 或长度不对）时，按 token 在块内均匀分配
+ * - [toSegmentsFromText]：已解码文本（如 sherpa result.text）专用——无逐 token
+ *   时间戳时按句在块内均匀分配（2026-10-24 英文案：Zipformer-CTC 的 text 路径）
  *
  * 纯 Kotlin，可在 JVM 单元测试。
  */
@@ -49,9 +53,10 @@ object SentenceSegmenter {
         data class Tok(val text: String, val startMs: Long, val endMs: Long)
         val toks = mutableListOf<Tok>()
         for (i in tokens.indices) {
-            val text = tokens[i]
+            // bbpe 子词标记归一：▁（U+2581，词界）转空格；中文单字 token 无此标记，不受影响
+            val text = tokens[i].replace("▁", " ")
             if (text.isBlank()) continue
-            if (text.startsWith("<|") && text.endsWith("|>")) continue
+            if (text.startsWith("<") && text.endsWith(">")) continue
             val (startMs, endMs) = when {
                 hasTimestamps -> {
                     val start = (timestampsSec[i] * 1000.0).roundToLong()
@@ -91,5 +96,38 @@ object SentenceSegmenter {
         }
         flush()
         return out
+    }
+
+    /**
+     * 已解码文本 → 句子级分段（无逐 token 时间戳时用）。
+     *
+     * 按句末标点切句（标点保留；末尾无标点的残句自成一段），每句在块内均匀分配
+     * 一段时间片。精度低于原生 token 时间戳，但文本正确性优先于时间戳精度——
+     * 这是 Zipformer-CTC 改取 result.text 后的配套兜底（其 tokens 为字节碎片，
+     * 不可用；text 本身不带逐 token 时间戳）。
+     */
+    fun toSegmentsFromText(
+        text: String,
+        chunkOffsetMs: Long = 0L,
+        chunkDurationMs: Long = 0L,
+    ): List<RawSegment> {
+        if (text.isBlank()) return emptyList()
+        val sentences = mutableListOf<String>()
+        val buf = StringBuilder()
+        for (ch in text) {
+            buf.append(ch)
+            if (ch in SENTENCE_END) {
+                sentences.add(buf.toString())
+                buf.clear()
+            }
+        }
+        if (buf.isNotBlank()) sentences.add(buf.toString())
+        if (sentences.isEmpty()) return emptyList()
+        val per = if (chunkDurationMs > 0) chunkDurationMs.toDouble() / sentences.size else 0.0
+        return sentences.mapIndexed { i, s ->
+            val start = chunkOffsetMs + (i * per).roundToLong()
+            val end = chunkOffsetMs + ((i + 1) * per).roundToLong()
+            RawSegment(start, max(end, start), s.trim())
+        }.filter { it.text.isNotEmpty() }
     }
 }

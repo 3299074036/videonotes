@@ -8,6 +8,9 @@ object Routes {
     /** 笔记库（M5 首页）。 */
     const val HOME = "home"
 
+    /** 视频导入页：粘贴链接 / 最近导入，解析走元信息页（与分享意图同一路径）。 */
+    const val IMPORT = "import"
+
     const val SETTINGS = "settings"
 
     /** 设置页 Tab 参数：kb_home（知识库）/ kb_settings（设置），外层可直达设置 Tab。 */
@@ -16,8 +19,30 @@ object Routes {
     /** 构造设置页路由（默认知识库 Tab；传 kb_settings 直达设置 Tab）。 */
     fun settings(startTab: String = "kb_home"): String = "$SETTINGS?$ARG_START_TAB=$startTab"
 
-    /** 语音识别模型管理页（M3）：模型下载 / 删除 / 选择 / 仅 Wi-Fi 开关。 */
+    /** 模型管理页（M3）：模型下载 / 删除 / 选择。 */
     const val MODEL_MANAGEMENT = "model_management"
+
+    /** 模型管理页参数：入口分区（直达模式），缺省 [SECTION_FULL] 为完整版。 */
+    const val ARG_SECTION = "section"
+
+    /** 分区：本地大语言模型（当前模型条 + 模型列表）。 */
+    const val SECTION_LLM_LOCAL = "llm_local"
+
+    /** 分区：云端 API 配置表单。 */
+    const val SECTION_LLM_CLOUD = "llm_cloud"
+
+    /** 分区：语音识别模型列表。 */
+    const val SECTION_ASR = "asr"
+
+    /** 分区：完整版（双分段切换 + 已下载汇总）。 */
+    const val SECTION_FULL = "full"
+
+    /** 含参数的模型管理页路由模板。 */
+    const val MODEL_MANAGEMENT_ROUTE = "$MODEL_MANAGEMENT?$ARG_SECTION={$ARG_SECTION}"
+
+    /** 构造模型管理页路由（按入口分区直达）。 */
+    fun modelManagement(section: String = SECTION_FULL): String =
+        "$MODEL_MANAGEMENT?$ARG_SECTION=$section"
 
     /** 开源许可页（M6）：第三方组件许可列表。 */
     const val LICENSES = "licenses"
@@ -30,6 +55,12 @@ object Routes {
 
     /** 运维诊断页：LLM 诊断探针 / 日志管理 / 设备信息。 */
     const val OPS_DIAGNOSTICS = "ops_diagnostics"
+
+    /** 崩溃日志页：worker.log 中 [CRASH] 条目的结构化过滤视图。 */
+    const val CRASH_LOG = "crash_log"
+
+    /** 笔记提示词编辑页：自定义 system 提示词（本地 / 云端两档）。 */
+    const val PROMPT_EDITOR = "prompt_editor"
 
     /** 元信息页参数：待解析的视频链接（分享文本亦可，解析器内部会提取 URL）。 */
     const val ARG_URL = "url"

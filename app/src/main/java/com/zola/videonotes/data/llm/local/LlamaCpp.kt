@@ -16,6 +16,13 @@ object LlamaCpp {
         System.loadLibrary("videonotes_llama")
     }
 
+    /**
+     * 设置原生崩溃面包屑文件路径：native 信号处理（JNI_OnLoad 时安装）在
+     * 生成类调用的线程发生原生崩溃时，把信号与里程碑追加写入该文件。
+     * 须在首次 generate / loadModel 前调用（见 LlmCrashBreadcrumb）。
+     */
+    external fun setBreadcrumbPath(path: String)
+
     /** 加载模型，成功返回非 0 句柄，失败返回 0（用 [lastError] 取原因）。 */
     external fun loadModel(modelPath: String, nCtx: Int, nThreads: Int): Long
 
@@ -62,6 +69,43 @@ object LlamaCpp {
     external fun lastError(): String
 
     /**
+     * WP2 探针返回码：有内嵌模板且 llama_chat_apply_template 试拼通过。
+     * 注意 v0.7.0 的 apply 不解析 Jinja、只认预定义模板集，
+     * [PROBE_UNSUPPORTED] 是运行时固有限制，不是文件损坏。
+     */
+    /** WP2：GGUF 内嵌模板探针（仅元数据级加载模型，不建上下文）。返回 PROBE_* 码。 */
+    external fun probeChatTemplate(modelPath: String): Int
+
+    /**
+     * WP2：用已加载模型的内嵌模板拼装 prompt（动态条目生成路径）。
+     * 失败返回 null，原因经 [lastError] 取。
+     */
+    external fun applyEmbeddedTemplate(
+        handle: Long,
+        roles: Array<String>,
+        contents: Array<String>,
+        addAssistant: Boolean,
+    ): String?
+
+    /**
+     * 预定义命名模板探针（国内名单定版）：直接以模板名（hunyuan-dense / glmedge）
+     * 调 llama_chat_apply_template 试拼。返回 PROBE_* 码（无「无模板」态）。
+     */
+    external fun probeChatTemplateNamed(modelPath: String, templateName: String): Int
+
+    /**
+     * 用 llama.cpp 预定义命名模板拼装 prompt（内嵌 Jinja 不受支持时的兜底路径）。
+     * 失败返回 null，原因经 [lastError] 取。
+     */
+    external fun applyNamedTemplate(
+        handle: Long,
+        templateName: String,
+        roles: Array<String>,
+        contents: Array<String>,
+        addAssistant: Boolean,
+    ): String?
+
+    /**
      * 取 generate 实时进度（prefill batch 进度 / decode 进行中），Kotlin 侧可轮询。
      * JNI 侧每完成一个 prefill batch 更新一次；卡死时最后一次的值即卡住位置。
      */
@@ -85,4 +129,16 @@ object LlamaCpp {
     interface TokenCallback {
         fun onToken(token: String)
     }
+
+    /** probeChatTemplate 返回码：模板可用。 */
+    const val PROBE_OK = 0
+
+    /** probeChatTemplate 返回码：GGUF 无内嵌对话模板。 */
+    const val PROBE_NO_TEMPLATE = 1
+
+    /** probeChatTemplate 返回码：模板不被 v0.7.0 apply 支持。 */
+    const val PROBE_UNSUPPORTED = 2
+
+    /** probeChatTemplate 返回码：模型加载失败。 */
+    const val PROBE_LOAD_FAILED = 3
 }

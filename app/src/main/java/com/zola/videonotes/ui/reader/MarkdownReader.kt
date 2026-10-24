@@ -3,15 +3,13 @@ package com.zola.videonotes.ui.reader
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -24,6 +22,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -53,16 +55,238 @@ fun MarkdownReader(
     modifier: Modifier = Modifier,
 ) {
     val blocks = remember(markdown) { MarkdownParser.parse(markdown) }
+    val sections = remember(blocks) { buildRailSections(blocks) }
+    // 无任何时间 pill 的笔记（如纯文本导入）保持原平铺渲染，不出空轨
+    if (sections.none { it.anchorSeconds != null }) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(VideoNotesTokens.Space12),
+            modifier = modifier,
+        ) {
+            blocks.forEach { block ->
+                MdBlockView(
+                    block = block,
+                    onPillClick = onPillClick,
+                    onLinkClick = onLinkClick,
+                )
+            }
+        }
+        return
+    }
+    // 纸上课堂时间轨：按标题分节，每节首个 pill 移出正文、上左侧轨
     Column(
         verticalArrangement = Arrangement.spacedBy(VideoNotesTokens.Space12),
         modifier = modifier,
     ) {
-        blocks.forEach { block ->
-            MdBlockView(
-                block = block,
+        sections.forEach { section ->
+            RailSectionView(
+                section = section,
                 onPillClick = onPillClick,
                 onLinkClick = onLinkClick,
             )
+        }
+    }
+}
+
+/** 时间轨上的一节：左轨列（竖线 + 锚点 pill）+ 右侧正文块列。
+ *
+ * 2026-10-24 闪退修复（方案 A）：此前 Row 用 height(IntrinsicSize.Min) 让竖线
+ * Box 以 fillMaxHeight 撑满整节；一旦节内含表格（BoxWithConstraints，一种
+ * SubcomposeLayout），索要 intrinsic 尺寸即抛 IllegalStateException（note 2 首炸）。
+ * 现竖线改在 Row 上以 drawBehind 绘制：绘制发生在测量之后，不索要 intrinsic，
+ * 故含表格的节不再触发该异常；视觉与之前一致（线居轨中、贯穿整节、pill 顶对齐）。
+ */
+@Composable
+private fun RailSectionView(
+    section: RailSection,
+    onPillClick: (Long) -> Unit,
+    onLinkClick: (String) -> Unit,
+) {
+    val railLineColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)
+    Row(
+        modifier = Modifier.drawBehind {
+            val strokeWidth = 2.dp.toPx()
+            val centerX = VideoNotesTokens.RailWidth.toPx() / 2f
+            drawLine(
+                color = railLineColor,
+                start = Offset(centerX, 0f),
+                end = Offset(centerX, size.height),
+                strokeWidth = strokeWidth,
+            )
+        },
+    ) {
+        Box(
+            modifier = Modifier.width(VideoNotesTokens.RailWidth),
+        ) {
+            section.anchorSeconds?.let { seconds ->
+                RailTimestampPill(
+                    seconds = seconds,
+                    onClick = { onPillClick(seconds) },
+                    modifier = Modifier.align(Alignment.TopCenter),
+                )
+            }
+        }
+        Spacer(modifier = Modifier.width(VideoNotesTokens.Space12))
+        Column(
+            verticalArrangement = Arrangement.spacedBy(VideoNotesTokens.Space12),
+            modifier = Modifier.weight(1f),
+        ) {
+            section.blocks.forEach { block ->
+                MdBlockView(
+                    block = block,
+                    onPillClick = onPillClick,
+                    onLinkClick = onLinkClick,
+                )
+            }
+        }
+    }
+}
+
+/** 一节：锚点秒数（无 pill 的节为 null）+ 已摘出锚点 pill 的块列表。 */
+private data class RailSection(
+    val anchorSeconds: Long?,
+    val blocks: List<MdBlock>,
+)
+
+/**
+ * 按标题块分节，并把每节正文中第一个时间 pill 摘出作为轨锚点。
+ * 只处理标题 / 段落 / 引用 / 列表里的 pill；代码块、表格、Details 内的 pill 保持行内原样。
+ */
+private fun buildRailSections(blocks: List<MdBlock>): List<RailSection> {
+    val rawSections = mutableListOf<MutableList<MdBlock>>()
+    var current = mutableListOf<MdBlock>()
+    rawSections.add(current)
+    for (block in blocks) {
+        if (block is MdBlock.Heading && current.isNotEmpty()) {
+            current = mutableListOf()
+            rawSections.add(current)
+        }
+        current.add(block)
+    }
+    return rawSections.filter { it.isNotEmpty() }.map { sectionBlocks ->
+        var anchor: Long? = null
+        val stripped = sectionBlocks.map { block ->
+            if (anchor != null) {
+                block
+            } else {
+                val (newBlock, found) = removeFirstPill(block)
+                if (found != null) anchor = found
+                newBlock
+            }
+        }
+        RailSection(anchorSeconds = anchor, blocks = stripped)
+    }
+}
+
+/** 摘出块内第一个 pill（返回新块与被摘秒数；无 pill 时原样返回）。 */
+private fun removeFirstPill(block: MdBlock): Pair<MdBlock, Long?> = when (block) {
+    is MdBlock.Heading -> {
+        val (inlines, found) = removeFirstPillInlines(block.inlines)
+        block.copy(inlines = inlines) to found
+    }
+    is MdBlock.Paragraph -> {
+        val (inlines, found) = removeFirstPillInlines(block.inlines)
+        block.copy(inlines = inlines) to found
+    }
+    is MdBlock.Quote -> {
+        val (inlines, found) = removeFirstPillInlines(block.inlines)
+        block.copy(inlines = inlines) to found
+    }
+    is MdBlock.UnorderedList -> {
+        var found: Long? = null
+        val items = block.items.map { item ->
+            if (found != null) {
+                item
+            } else {
+                val (newItem, f) = removeFirstPillInlines(item.inlines)
+                if (f != null) {
+                    found = f
+                    item.copy(inlines = newItem)
+                } else {
+                    item
+                }
+            }
+        }
+        block.copy(items = items) to found
+    }
+    is MdBlock.OrderedList -> {
+        var found: Long? = null
+        val items = block.items.map { item ->
+            if (found != null) {
+                item
+            } else {
+                val (newItem, f) = removeFirstPillInlines(item.inlines)
+                if (f != null) {
+                    found = f
+                    item.copy(inlines = newItem)
+                } else {
+                    item
+                }
+            }
+        }
+        block.copy(items = items) to found
+    }
+    else -> block to null
+}
+
+/** 摘出行内列表中第一个 pill（可嵌套在粗体 / 斜体里）。 */
+private fun removeFirstPillInlines(
+    inlines: List<MdInline>,
+): Pair<List<MdInline>, Long?> {
+    val out = ArrayList<MdInline>(inlines.size)
+    var found: Long? = null
+    for (inline in inlines) {
+        if (found != null) {
+            out.add(inline)
+            continue
+        }
+        when (inline) {
+            is MdInline.Pill -> found = inline.seconds // 摘出，不放回正文
+            is MdInline.Bold -> {
+                val (sub, f) = removeFirstPillInlines(inline.inlines)
+                if (f != null) {
+                    found = f
+                    if (sub.isNotEmpty()) out.add(inline.copy(inlines = sub))
+                } else {
+                    out.add(inline)
+                }
+            }
+            is MdInline.Italic -> {
+                val (sub, f) = removeFirstPillInlines(inline.inlines)
+                if (f != null) {
+                    found = f
+                    if (sub.isNotEmpty()) out.add(inline.copy(inlines = sub))
+                } else {
+                    out.add(inline)
+                }
+            }
+            else -> out.add(inline)
+        }
+    }
+    return out to found
+}
+
+/** 全文时间 pill 总数（含 Details 折叠块内；供详情页底部阅读条展示）。 */
+internal fun countTimestampPills(blocks: List<MdBlock>): Int {
+    fun countInlines(inlines: List<MdInline>): Int = inlines.sumOf { inline ->
+        when (inline) {
+            is MdInline.Pill -> 1
+            is MdInline.Bold -> countInlines(inline.inlines)
+            is MdInline.Italic -> countInlines(inline.inlines)
+            else -> 0
+        }
+    }
+    return blocks.sumOf { block ->
+        when (block) {
+            is MdBlock.Heading -> countInlines(block.inlines)
+            is MdBlock.Paragraph -> countInlines(block.inlines)
+            is MdBlock.Quote -> countInlines(block.inlines)
+            is MdBlock.UnorderedList -> block.items.sumOf { countInlines(it.inlines) }
+            is MdBlock.OrderedList -> block.items.sumOf { countInlines(it.inlines) }
+            is MdBlock.Table -> (block.header + block.rows.flatten()).sumOf {
+                countInlines(MarkdownParser.parseInlines(it))
+            }
+            is MdBlock.Details -> countTimestampPills(block.blocks)
+            else -> 0
         }
     }
 }
@@ -104,7 +328,9 @@ internal fun MdBlockView(
                 modifier = modifier,
             ) {
                 block.items.forEach { item ->
-                    Row {
+                    Row(
+                        modifier = Modifier.padding(start = (item.indent * 16).dp),
+                    ) {
                         Text(
                             text = "•",
                             style = MaterialTheme.typography.bodyLarge,
@@ -112,7 +338,7 @@ internal fun MdBlockView(
                             modifier = Modifier.padding(end = VideoNotesTokens.Space8),
                         )
                         RichParagraph(
-                            inlines = item,
+                            inlines = item.inlines,
                             onPillClick = onPillClick,
                             onLinkClick = onLinkClick,
                             modifier = Modifier.weight(1f),
@@ -127,15 +353,17 @@ internal fun MdBlockView(
                 modifier = modifier,
             ) {
                 block.items.forEachIndexed { index, item ->
-                    Row {
+                    Row(
+                        modifier = Modifier.padding(start = (item.indent * 16).dp),
+                    ) {
                         Text(
-                            text = "${index + 1}.",
+                            text = "${item.number ?: index + 1}.",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.padding(end = VideoNotesTokens.Space8),
                         )
                         RichParagraph(
-                            inlines = item,
+                            inlines = item.inlines,
                             onPillClick = onPillClick,
                             onLinkClick = onLinkClick,
                             modifier = Modifier.weight(1f),
@@ -152,17 +380,24 @@ internal fun MdBlockView(
             }
         }
         is MdBlock.Quote -> {
+            // 2026-10-24 闪退修复（方案 A，同 RailSectionView）：左侧色条改
+            // drawBehind 绘制，不再用 height(IntrinsicSize.Min) + fillMaxHeight，
+            // 消除第二处 intrinsic 索要（子树目前无 SubcomposeLayout，但同类隐患清零）。
+            val quoteBarColor = MaterialTheme.colorScheme.primary
             Row(
-                modifier = modifier.height(IntrinsicSize.Min),
+                modifier = modifier.drawBehind {
+                    val barWidth = 4.dp.toPx()
+                    val corner = 2.dp.toPx()
+                    drawRoundRect(
+                        color = quoteBarColor,
+                        topLeft = Offset.Zero,
+                        size = Size(barWidth, size.height),
+                        cornerRadius = CornerRadius(corner, corner),
+                    )
+                },
             ) {
-                Surface(
-                    color = MaterialTheme.colorScheme.primary,
-                    shape = RoundedCornerShape(2.dp),
-                    modifier = Modifier
-                        .width(4.dp)
-                        .fillMaxHeight(),
-                ) {}
-                Spacer(modifier = Modifier.width(VideoNotesTokens.Space12))
+                // 色条改绘制后不再占布局宽，间隔补 4dp，使正文起始 x 与之前一致（4dp 条 + 12dp 间隔）。
+                Spacer(modifier = Modifier.width(VideoNotesTokens.Space12 + 4.dp))
                 RichParagraph(
                     inlines = block.inlines,
                     onPillClick = onPillClick,
@@ -176,7 +411,12 @@ internal fun MdBlockView(
             }
         }
         is MdBlock.Table -> {
-            TableBlock(table = block, modifier = modifier)
+            TableBlock(
+                table = block,
+                onPillClick = onPillClick,
+                onLinkClick = onLinkClick,
+                modifier = modifier,
+            )
         }
         is MdBlock.Details -> {
             DetailsBlock(
@@ -202,7 +442,12 @@ private sealed interface Segment {
         val italic: Boolean = false,
         val code: Boolean = false,
     ) : Segment
-    data class Link(val text: String, val url: String) : Segment
+    data class Link(
+        val text: String,
+        val url: String,
+        val bold: Boolean = false,
+        val italic: Boolean = false,
+    ) : Segment
     data class Pill(val seconds: Long) : Segment
 }
 
@@ -225,7 +470,7 @@ private fun flattenSegments(inlines: List<MdInline>): List<Segment> {
             is MdInline.Bold -> inline.inlines.forEach { walk(it, true, italic) }
             is MdInline.Italic -> inline.inlines.forEach { walk(it, bold, true) }
             is MdInline.Code -> emit(Segment.Text(inline.code, bold, italic, code = true))
-            is MdInline.Link -> out.add(Segment.Link(inline.text, inline.url))
+            is MdInline.Link -> out.add(Segment.Link(inline.text, inline.url, bold, italic))
             is MdInline.Pill -> out.add(Segment.Pill(inline.seconds))
         }
     }
@@ -248,7 +493,9 @@ private fun RichParagraph(
     val segments = remember(inlines) { flattenSegments(inlines) }
     if (segments.isEmpty()) return
     FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        // 段内不留统一间距（中文无词间空格，统一间距会在句中造出多余空隙）；
+        // pill 自带左右 padding 与文字隔开。
+        horizontalArrangement = Arrangement.spacedBy(0.dp),
         verticalArrangement = Arrangement.Center,
         modifier = modifier,
     ) {
@@ -278,6 +525,11 @@ private fun RichParagraph(
                         style = style.copy(
                             color = MaterialTheme.colorScheme.primary,
                             textDecoration = TextDecoration.Underline,
+                        ).merge(
+                            SpanStyle(
+                                fontWeight = if (seg.bold) FontWeight.Bold else null,
+                                fontStyle = if (seg.italic) FontStyle.Italic else null,
+                            ),
                         ),
                         modifier = Modifier.clickable { onLinkClick(seg.url) },
                     )
@@ -286,6 +538,7 @@ private fun RichParagraph(
                     TimestampPill(
                         seconds = seg.seconds,
                         onClick = { onPillClick(seg.seconds) },
+                        modifier = Modifier.padding(horizontal = 2.dp),
                     )
                 }
             }
@@ -314,26 +567,34 @@ private fun CodeBlockView(code: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** 表格：列等宽、整体横向滚动。 */
+/** 表格：列宽显式（不用 weight，避开横向滚动容器里 weight 塌到最小宽致全表竖排的老 bug）。
+ * 单元格走 RichParagraph 行内解析（粗体 / 链接 / pill 在表内同样生效、可点）。 */
 @Composable
-private fun TableBlock(table: MdBlock.Table, modifier: Modifier = Modifier) {
+private fun TableBlock(
+    table: MdBlock.Table,
+    onPillClick: (Long) -> Unit,
+    onLinkClick: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
-        val minWidth = maxOf(maxWidth, (table.header.size * 140).dp)
+        val columnCount = table.header.size.coerceAtLeast(1)
+        val columnWidth = maxOf(maxWidth / columnCount, 140.dp)
         Column(
             modifier = Modifier
-                .width(minWidth)
+                .width(columnWidth * columnCount)
                 .horizontalScroll(rememberScrollState()),
         ) {
             Row(modifier = Modifier.fillMaxWidth()) {
                 table.header.forEach { cell ->
-                    Text(
-                        text = cell,
+                    RichParagraph(
+                        inlines = MarkdownParser.parseInlines(cell),
+                        onPillClick = onPillClick,
+                        onLinkClick = onLinkClick,
                         style = MaterialTheme.typography.bodyMedium.copy(
                             fontWeight = FontWeight.Bold,
                         ),
-                        color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier
-                            .weight(1f)
+                            .width(columnWidth)
                             .padding(VideoNotesTokens.Space8),
                     )
                 }
@@ -341,14 +602,15 @@ private fun TableBlock(table: MdBlock.Table, modifier: Modifier = Modifier) {
             HorizontalDivider()
             table.rows.forEach { row ->
                 Row(modifier = Modifier.fillMaxWidth()) {
-                    // 列数不足时补空，超出时截断（与表头对齐）
+                    // 解析器已把行对齐到表头列数，这里只做越界兜底
                     for (i in table.header.indices) {
-                        Text(
-                            text = row.getOrNull(i).orEmpty(),
+                        RichParagraph(
+                            inlines = MarkdownParser.parseInlines(row.getOrNull(i).orEmpty()),
+                            onPillClick = onPillClick,
+                            onLinkClick = onLinkClick,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier
-                                .weight(1f)
+                                .width(columnWidth)
                                 .padding(VideoNotesTokens.Space8),
                         )
                     }

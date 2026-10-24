@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.zola.videonotes.data.llm.LlmClient
 import com.zola.videonotes.data.llm.LlmCredentialStore
+import com.zola.videonotes.data.llm.LlmEngineResolver
 import com.zola.videonotes.data.llm.LlmEngineType
 import com.zola.videonotes.data.llm.LlmPresets
 import com.zola.videonotes.data.llm.LlmSettings
@@ -16,8 +17,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -32,10 +35,10 @@ data class LlmSettingsUiState(
     /** 测试结果文案（成功/失败共用，testSuccess 区分颜色）。 */
     val testResult: String? = null,
     val testSuccess: Boolean = false,
-    /** 引擎类型。 */
-    val engineType: LlmEngineType = LlmEngineType.CLOUD,
-    /** 当前选择的本地模型 ID。 */
-    val localModelId: String = LocalLlmModels.QWEN3_4B.id,
+    /** 引擎类型（存储值，界面选中态走有效引擎，见 [LlmSettingsViewModel.effectiveEngineType]）。 */
+    val engineType: LlmEngineType = LlmEngineType.LOCAL,
+    /** 当前选择的本地模型 ID（合并包：可空，未选 = null，不再默认 QWEN3_4B）。 */
+    val localModelId: String? = null,
 )
 
 /**
@@ -46,6 +49,7 @@ data class LlmSettingsUiState(
 @HiltViewModel
 class LlmSettingsViewModel @Inject constructor(
     private val llmSettings: LlmSettings,
+    private val engineResolver: LlmEngineResolver,
     private val credentialStore: LlmCredentialStore,
     private val llmClient: LlmClient,
     private val localPrefs: LocalLlmPreferences,
@@ -55,6 +59,13 @@ class LlmSettingsViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(LlmSettingsUiState())
     val uiState: StateFlow<LlmSettingsUiState> = _uiState.asStateFlow()
+
+    /**
+     * 有效引擎（方案 B 单一口径，[LlmEngineResolver] 推导）：
+     * 模型管理页完整版的引擎分段选中态与内容分支按它走，不用存储值。
+     */
+    val effectiveEngineType: StateFlow<LlmEngineType> = engineResolver.effectiveEngineType
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LlmEngineType.LOCAL)
 
     /** 本地模型下载状态（key 为 modelId）。 */
     val localDlStates: StateFlow<Map<String, LocalModelDownloadManager.ModelDlState>> =

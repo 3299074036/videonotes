@@ -17,6 +17,32 @@ import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * 转写文本是否为“符号汤”（字节级 BPE 碎片未解码的产物）。
+ *
+ * 判定（两者同时满足才算汤，缺一不可）：
+ * - 一个中文字都没有；
+ * - 字母中拉丁扩展字符（U+0100–U+024F，如 Ǝ Ľ ŋ Ş）占比 ≥ 30%。
+ *
+ * 英文课程本身无中文，但拉丁扩展占比近 0，不会误伤；中英混合有中文，直接放行。
+ * 字母总量 < 10 时不判定（样本太小，比值不可信）。纯 Kotlin，可 JVM 单元测试。
+ */
+internal fun isTranscriptSoup(text: String): Boolean {
+    var chinese = 0
+    var latinExt = 0
+    var letters = 0
+    for (ch in text) {
+        if (!ch.isLetter()) continue
+        letters++
+        when (ch.code) {
+            in 0x4E00..0x9FFF, in 0x3400..0x4DBF, in 0xF900..0xFAFF -> chinese++
+            in 0x0100..0x024F -> latinExt++
+        }
+    }
+    if (letters < 10 || chinese > 0 || latinExt == 0) return false
+    return latinExt.toDouble() / letters >= 0.3
+}
+
 /** 转写阶段（面向用户的进度文案）。 */
 enum class TranscribeStage(val displayText: String) {
     /** 正在下载音频流 */
@@ -54,7 +80,9 @@ class TranscribeAudioUseCase @Inject constructor(
         onStage: (stage: TranscribeStage, progress: Float) -> Unit,
     ): Result<List<TranscriptSegment>> {
         return try {
-            val model = AsrModelCatalog.get(prefs.selectedModelId.first())
+            val selectedId = prefs.selectedModelId.first()
+                ?: throw IOException("尚未选择识别模型，请先到模型管理页选择并下载")
+            val model = AsrModelCatalog.get(selectedId)
             if (!downloadManager.isDownloaded(model.id)) {
                 throw IOException("语音模型尚未下载，请先在设置 → 语音识别模型中下载")
             }
@@ -80,6 +108,11 @@ class TranscribeAudioUseCase @Inject constructor(
                 pcmChunks = chunks,
             ) { p -> onStage(TranscribeStage.TRANSCRIBING, p) }
             if (rawSegments.isEmpty()) throw IOException("转写结果为空，请检查音频是否有效")
+            // 2026-10-24 英文案：字节级 BPE 碎片汤（如 Zipformer-CTC 旧 tokens 路径）
+            // 非空但不可读，必须在入库前拦住，否则 LLM 只能用英文分析这堆“密文”。
+            if (isTranscriptSoup(rawSegments.joinToString("") { it.text })) {
+                throw IOException("转写结果异常，请更换识别模型")
+            }
 
             onStage(TranscribeStage.SAVING, -1f)
             val key = video.storageKey()

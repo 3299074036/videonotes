@@ -4,6 +4,6 @@
 视频标题：{title}
 视频时长：{duration}
 
-以下是视频文稿（格式为 [mm:ss] 文本），请按 system prompt 的要求生成课堂笔记：
+以下是视频文稿（格式为 [mm:ss] 文本），请按 system prompt 的要求生成课堂笔记，并用简体中文输出：
 
 {transcript}

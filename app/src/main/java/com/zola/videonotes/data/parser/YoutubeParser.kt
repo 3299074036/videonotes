@@ -3,6 +3,7 @@ package com.zola.videonotes.data.parser
 import com.zola.videonotes.domain.model.Platform
 import com.zola.videonotes.domain.model.VideoInfo
 import com.zola.videonotes.domain.parser.VideoParser
+import com.zola.videonotes.data.auth.YoutubeCookieStore
 import com.zola.videonotes.data.network.newpipe.NewPipeSetup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -22,6 +23,7 @@ import javax.inject.Singleton
 @Singleton
 class YoutubeParser @Inject constructor(
     private val newPipeSetup: NewPipeSetup,
+    private val youtubeCookieStore: YoutubeCookieStore,
 ) : VideoParser {
 
     override val platform: Platform = Platform.YOUTUBE
@@ -63,8 +65,16 @@ class YoutubeParser @Inject constructor(
                 ),
             )
         } catch (t: Throwable) {
-            // 含 NoSuchMethodError 在内的所有异常统一转为中文友好错误
-            Result.failure(IOException("YouTube 解析失败：${t.message ?: t.javaClass.simpleName}，请检查链接或稍后重试"))
+            // 含 NoSuchMethodError 在内的所有异常统一转为中文友好错误；
+            // 已导入 cookie 仍报 LOGIN_REQUIRED 时，提示登录态可能已过期（让用户知道该重导，而非链接问题）
+            val rawMsg = t.message ?: t.javaClass.simpleName
+            val expiredHint =
+                if (rawMsg.contains("LOGIN_REQUIRED") && youtubeCookieStore.isImported.value) {
+                    "（登录态可能已过期，请重新导入 cookie）"
+                } else {
+                    ""
+                }
+            Result.failure(IOException("YouTube 解析失败：$rawMsg$expiredHint，请检查链接或稍后重试"))
         }
     }
 

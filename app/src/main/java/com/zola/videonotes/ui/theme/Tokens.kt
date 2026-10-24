@@ -37,12 +37,19 @@ object VideoNotesTokens {
     val TextSizeHeadlineSmall = 24.sp
     val TextSizeDisplaySmall = 32.sp
 
-    // 行高
-    val LineHeightBody = 24.sp
+    // 行高（纸上课堂：正文 16sp × 1.8，长读行高）
+    val LineHeightBody = 28.8.sp
     val LineHeightTitle = 28.sp
 
     // 封面图比例
     const val CoverAspectRatio = 16f / 9f
+
+    // 列表文档行封面缩略图（96×60）
+    val CoverThumbWidth = 96.dp
+    val CoverThumbHeight = 60.dp
+
+    // 笔记详情左侧时间轨列宽
+    val RailWidth = 52.dp
 
     // 骨架屏 / 空状态插画尺寸
     val IllustrationSize = 96.dp

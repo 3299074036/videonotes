@@ -5,6 +5,7 @@ import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.zola.videonotes.data.llm.LocalLlmEngine
+import com.zola.videonotes.data.work.WorkerDiagnosticLog
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -28,8 +29,26 @@ class OpsDiagnosticsViewModel @Inject constructor(
     private val _probing = MutableStateFlow(false)
     val probing: StateFlow<Boolean> = _probing.asStateFlow()
 
+    /**
+     * 本地生成进行中（来自引擎忙时门禁，2026-10-24 探针误伤案后加）：
+     * 为 true 时单 token 诊断按钮置灰；最小化测试与线程对比用独立上下文，
+     * 不受门禁影响（但会与生成争 CPU/内存，见界面文案）。
+     */
+    val isGenerating: StateFlow<Boolean> = localLlmEngine.isGenerating
+
     private val _probeResult = MutableStateFlow<String?>(null)
     val probeResult: StateFlow<String?> = _probeResult.asStateFlow()
+
+    /**
+     * 崩溃日志条数（2026-10-24 合并包）：worker.log 中 [CRASH] 头行数，
+     * 进入运维页时读一次（日志管理入口副标题用）。
+     */
+    val crashCount: StateFlow<Int> = MutableStateFlow(
+        runCatching {
+            WorkerDiagnosticLog.logFile(context).takeIf { it.exists() }
+                ?.readLines()?.count { "[CRASH]" in it } ?: 0
+        }.getOrDefault(0),
+    ).asStateFlow()
 
     /** 设备信息：CPU / 架构 / App 版本 / llama.cpp 版本 / 构建优化等级。 */
     val deviceInfo: List<Pair<String, String>> = buildList {
@@ -79,6 +98,26 @@ class OpsDiagnosticsViewModel @Inject constructor(
             _probeResult.value = null
             try {
                 localLlmEngine.runMinimalNativeProbe()
+                    .onSuccess { _probeResult.value = it }
+                    .onFailure { e -> _probeResult.value = "❌ ${e.message ?: "诊断失败"}" }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _probeResult.value = "❌ 诊断异常：${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                _probing.value = false
+            }
+        }
+    }
+
+    /** 方案 T 诊断：固定 prompt × 线程数对比（4/6/8 线程 + 绑大核，512 token/批）。 */
+    fun runThreadSweepProbe() {
+        if (_probing.value) return
+        viewModelScope.launch {
+            _probing.value = true
+            _probeResult.value = null
+            try {
+                localLlmEngine.runThreadSweepProbe()
                     .onSuccess { _probeResult.value = it }
                     .onFailure { e -> _probeResult.value = "❌ ${e.message ?: "诊断失败"}" }
             } catch (e: CancellationException) {

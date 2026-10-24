@@ -1,7 +1,9 @@
 package com.zola.videonotes.ui.reader
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -15,6 +17,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.zola.videonotes.ui.theme.VideoNotesTokens
 
@@ -61,6 +64,41 @@ fun TimestampPill(
             Text(
                 text = formatPillSeconds(seconds),
                 style = MaterialTheme.typography.labelSmall,
+            )
+        }
+    }
+}
+
+/**
+ * 时间轨 pill（纸上课堂）：填充蓝、▶ 与时间上下两行，是每节的锚点。
+ * 挂在笔记详情左侧时间轨的竖线上，点击行为与 [TimestampPill] 一致（跳回视频对应位置）。
+ */
+@Composable
+fun RailTimestampPill(
+    seconds: Long,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(VideoNotesTokens.CornerMedium),
+        color = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+        modifier = modifier,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 5.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.PlayArrow,
+                contentDescription = "跳到 ${formatPillSeconds(seconds)}",
+                modifier = Modifier.size(13.dp),
+            )
+            Spacer(modifier = Modifier.height(1.dp))
+            Text(
+                text = formatPillSeconds(seconds),
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
             )
         }
     }

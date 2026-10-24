@@ -1,12 +1,19 @@
 package com.zola.videonotes.data.asr.engine
 
+import android.content.Context
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OfflineDolphinModelConfig
+import com.k2fsa.sherpa.onnx.OfflineParaformerModelConfig
 import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
+import com.k2fsa.sherpa.onnx.OfflineTransducerModelConfig
 import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
+import com.k2fsa.sherpa.onnx.OfflineZipformerCtcModelConfig
+import com.zola.videonotes.data.work.WorkerDiagnosticLog
 import com.zola.videonotes.domain.asr.AsrModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -26,7 +33,9 @@ import kotlin.math.roundToLong
  * 注意：sherpa-onnx 的 native 库加载与推理只能在真机/模拟器上验证，JVM 单元测试无法覆盖此类。
  */
 @Singleton
-class SherpaAsrEngine @Inject constructor() {
+class SherpaAsrEngine @Inject constructor(
+    @ApplicationContext private val appContext: Context,
+) {
 
     /**
      * 转写 16kHz 单声道 PCM 块列表（[PcmDecoder] 产出）。
@@ -60,13 +69,36 @@ class SherpaAsrEngine @Inject constructor() {
                     stream.acceptWaveform(chunk, SAMPLE_RATE)
                     recognizer.decode(stream)
                     val result = recognizer.getResult(stream)
-                    out += SentenceSegmenter.toSegments(
-                        tokens = result.tokens.toList(),
-                        timestampsSec = result.timestamps,
-                        durationsSec = result.durations,
-                        chunkOffsetMs = chunkOffsetMs,
-                        chunkDurationMs = chunkDurationMs,
-                    )
+                    // 2026-10-24 英文案：Zipformer-CTC 的 tokens.txt 是纯字节级 BPE
+                    // 碎片（无汉字），走 tokens 路径入库即拉丁符号汤，LLM 只能用英文
+                    // 分析这堆“密文”。故本分支（且仅本分支）改取 sherpa 经 bbpe.model
+                    // 反解码后的 result.text；text 无逐 token 时间戳，分句时间戳走
+                    // 「按块时长均匀分配」兜底。Transducer 不在此列（见组装注释）。
+                    // 作用域条件必须是 engineKind，不得仅凭“带 bpe 文件”触发。
+                    if (model.engineKind == AsrModel.EngineKind.ZIPFORMER_CTC) {
+                        // 对照诊断（worker.log，详细日志页可见）：text 应为正常中文，
+                        // tokens 应为符号汤；两者一致即机制定案，任一反常都值得复查。
+                        WorkerDiagnosticLog.log(
+                            appContext,
+                            "asr",
+                            "[对照] ${model.id} chunk=$index " +
+                                "text=${result.text.take(100)} | " +
+                                "tokens=${result.tokens.take(8).joinToString(" ")}",
+                        )
+                        out += SentenceSegmenter.toSegmentsFromText(
+                            text = result.text,
+                            chunkOffsetMs = chunkOffsetMs,
+                            chunkDurationMs = chunkDurationMs,
+                        )
+                    } else {
+                        out += SentenceSegmenter.toSegments(
+                            tokens = result.tokens.toList(),
+                            timestampsSec = result.timestamps,
+                            durationsSec = result.durations,
+                            chunkOffsetMs = chunkOffsetMs,
+                            chunkDurationMs = chunkDurationMs,
+                        )
+                    }
                 } finally {
                     stream.release()
                 }
@@ -92,6 +124,28 @@ class SherpaAsrEngine @Inject constructor() {
             return f.absolutePath
         }
 
+        /**
+         * 按目录条目文件名精确定位（B 档新分支用；旧分支维持后缀查找不动）。
+         * 下载按条目文件名落盘，故目录名即条目名，不存在或为空时抛中文错误。
+         */
+        fun catalogFile(exactName: String, desc: String): String {
+            val f = File(dir, exactName)
+            if (f.exists() && f.length() > 0) return f.absolutePath
+            throw IOException("模型文件缺失（$desc），请重新下载${model.displayName}")
+        }
+
+        /** 在条目文件集中按名字关键字定位（Transducer 的 encoder/decoder/joiner 用）。 */
+        fun catalogFileContaining(keyword: String, desc: String): String {
+            val name = model.files.firstOrNull { it.name.contains(keyword) }?.name
+                ?: throw IOException("模型文件缺失（$desc），请重新下载${model.displayName}")
+            return catalogFile(name, desc)
+        }
+
+        /** BPE 词表路径（Zipformer-CTC / Transducer 的 bbpe.model；无此文件时传空串即不启用）。 */
+        fun bpeVocabOrEmpty(): String =
+            model.files.firstOrNull { it.name.endsWith("bpe.model") }
+                ?.let { catalogFile(it.name, "BPE 词表") } ?: ""
+
         val modelConfig = when (model.engineKind) {
             AsrModel.EngineKind.WHISPER -> OfflineModelConfig(
                 whisper = OfflineWhisperModelConfig(
@@ -111,6 +165,57 @@ class SherpaAsrEngine @Inject constructor() {
                     useInverseTextNormalization = true,
                 ),
                 tokens = requiredFile("tokens.txt", "词表"),
+                numThreads = numThreads,
+            )
+            // WP7：Paraformer 组装只需 model 路径（AAR 类字段实证：仅 model + qnnConfig），
+            // tokens 走 OfflineModelConfig.tokens，与现有两支同构。
+            // 时间戳行为待真机验证：Paraformer 结果若无 token 级时间戳，
+            // SentenceSegmenter 既有「按块时长均匀分配」兜底自动生效。
+            AsrModel.EngineKind.PARAFORMER -> OfflineModelConfig(
+                paraformer = OfflineParaformerModelConfig(
+                    model = requiredFile("model.int8.onnx", "模型"),
+                ),
+                tokens = requiredFile("tokens.txt", "词表"),
+                numThreads = numThreads,
+            )
+            // B 档新增：Zipformer-CTC（k2-fsa WenetSpeech 系）。单 model + tokens，
+            // bbpe.model 随条目下载并传 bpeVocab（bbpe 子词解码用）。
+            // 2026-10-24 英文案：本分支文本改取 result.text（见 transcribe 内注释），
+            // 不再用 tokens 拼文本；bpeVocab 仍是 text 解码所必需，不可去掉。
+            // 时间戳落点待真机验证（现为均匀分配兜底）。
+            AsrModel.EngineKind.ZIPFORMER_CTC -> OfflineModelConfig(
+                zipformerCtc = OfflineZipformerCtcModelConfig(
+                    model = catalogFileContaining(".onnx", "模型"),
+                ),
+                tokens = catalogFile("tokens.txt", "词表"),
+                bpeVocab = bpeVocabOrEmpty(),
+                numThreads = numThreads,
+            )
+            // B 档新增：Zipformer Transducer（multi-zh-hans 配方）。官方 int8 组合是
+            // encoder/joiner int8 + decoder fp32 混搭，目录层按文件名/大小/哈希逐文件表达，
+            // 组装只取路径、不区分精度；tokens + bpeVocab 同上；原生 token 级时间戳。
+            // 作用域注意：Transducer 虽有 bpe.model，但其 tokens 含中文词片、可读，
+            // 故有意保持 tokens 路径——切到 text 路径会丢原生 token 时间戳（降级）。
+            // text 路径的触发条件只认 engineKind == ZIPFORMER_CTC，不得扩到本分支。
+            // 时间戳落点待真机验证。
+            AsrModel.EngineKind.TRANSDUCER -> OfflineModelConfig(
+                transducer = OfflineTransducerModelConfig(
+                    encoder = catalogFileContaining("encoder", "编码器"),
+                    decoder = catalogFileContaining("decoder", "解码器"),
+                    joiner = catalogFileContaining("joiner", "连接器"),
+                ),
+                tokens = catalogFile("tokens.txt", "词表"),
+                bpeVocab = bpeVocabOrEmpty(),
+                numThreads = numThreads,
+            )
+            // B 档新增：Dolphin CTC（Dataocean × 清华）。单 model 字段最简；
+            // 文本后处理：输出中的语言/方言标签 token（<...> 形）由 SentenceSegmenter
+            // 的标签跳过规则清洗；CTC 时间戳通路按框架实证，落点待真机验证。
+            AsrModel.EngineKind.DOLPHIN -> OfflineModelConfig(
+                dolphin = OfflineDolphinModelConfig(
+                    model = catalogFileContaining(".onnx", "模型"),
+                ),
+                tokens = catalogFile("tokens.txt", "词表"),
                 numThreads = numThreads,
             )
         }

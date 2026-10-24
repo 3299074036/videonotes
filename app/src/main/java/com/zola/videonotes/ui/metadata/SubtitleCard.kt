@@ -141,7 +141,7 @@ private fun NotFetchedContent(
     )
 }
 
-/** 转写中 / 转写失败的状态区（NeedModel 与 Confirm 由上层 Snackbar / 对话框处理）。 */
+/** 转写中 / 转写失败的状态区（引导弹层与二次确认由上层对话框处理）。 */
 @Composable
 private fun TranscribeStatus(
     transcribeState: TranscribeUiState,
@@ -189,7 +189,7 @@ private fun TranscribeStatus(
             }
         }
         else -> {
-            // Idle / NeedModel / Confirm：不在卡片内展示
+            // Idle / Confirm：不在卡片内展示
         }
     }
 }

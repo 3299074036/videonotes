@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -30,12 +31,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarDuration
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -59,7 +54,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import coil3.request.crossfade
+import com.zola.videonotes.data.llm.LlmEngineType
 import com.zola.videonotes.data.llm.local.LlmDiagnosticLog
+import com.zola.videonotes.data.work.WorkerDiagnosticLog
 import com.zola.videonotes.domain.model.Platform
 import com.zola.videonotes.domain.model.VideoInfo
 import com.zola.videonotes.domain.model.storageKey
@@ -67,20 +64,21 @@ import com.zola.videonotes.ui.components.EmptyView
 import com.zola.videonotes.ui.components.ErrorView
 import com.zola.videonotes.ui.components.MetadataLoadingSkeleton
 import com.zola.videonotes.ui.components.PlatformBadge
+import com.zola.videonotes.ui.navigation.Routes
 import com.zola.videonotes.ui.theme.VideoNotesTokens
 
 /**
- * 元信息页（UI 重设计 v2）：Tab 布局。
- * 「视频信息」Tab：封面 / 元信息 / 字幕卡片 / 播放按钮（原有内容）。
- * 「课堂笔记」Tab：有笔记 → MarkdownReader 富渲染；无笔记 → 生成卡片
- * （生成中附实时日志面板），无文稿时引导先去取字幕。
+ * 元信息页（全自动工作流）：解析成功后由 ViewModel 自动编排
+ * 取字幕 →（无字幕）语音转写 → 生成笔记，无页签、无逐个点击。
+ * 主体按编排状态切换：处理中 / 阻塞 / 失败 → 整页工序单；
+ * 完成 → 视频头 + 完成视图；已取消 → 视频头 + 重新开始。
  * 右上角：重命名 / 删除（仅有笔记时）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MetadataScreen(
     onBackClick: () -> Unit,
-    onNavigateToModels: () -> Unit,
+    onNavigateToModels: (section: String) -> Unit,
     onNavigateToSettings: () -> Unit,
     onViewNoteClick: (Long) -> Unit,
     onPlayClick: (storageKey: String, seconds: Long) -> Unit,
@@ -90,63 +88,50 @@ fun MetadataScreen(
     val subtitleState by viewModel.subtitleState.collectAsStateWithLifecycle()
     val transcribeState by viewModel.transcribeState.collectAsStateWithLifecycle()
     val generateState by viewModel.generateState.collectAsStateWithLifecycle()
-    val llmConfigured by viewModel.llmConfigured.collectAsStateWithLifecycle()
     val existingNoteId by viewModel.existingNoteId.collectAsStateWithLifecycle()
-    // 有字幕段（可生成笔记）时也允许切到课堂笔记 Tab
-    val hasTranscriptForTab = (subtitleState as? SubtitleUiState.Fetched)
-        ?.result?.segments?.isNotEmpty() == true
+    val pipelineState by viewModel.pipelineState.collectAsStateWithLifecycle()
+    val effectiveEngineType by viewModel.effectiveEngineType.collectAsStateWithLifecycle()
     // 实时日志流（本地/云端引擎共用 LlmDiagnosticLog.log，自动推送）
     val llmLogLines by LlmDiagnosticLog.logFlow.collectAsStateWithLifecycle()
-    val snackbarHostState = remember { SnackbarHostState() }
-    var selectedTab by remember { mutableStateOf(0) }
+    // Worker 诊断日志流（转写 / 生成后台任务的关键步骤落点）
+    val workerLogLines by WorkerDiagnosticLog.logFlow.collectAsStateWithLifecycle()
+    // 本轮编排启动时刻：工序单日志预览按它过滤上一轮残留行
+    val pipelineLogStartMillis by viewModel.pipelineLogStartMillis.collectAsStateWithLifecycle()
+    // 管线真实启动时刻（持久化）：工序单「已用时」的计算基准，重进页面不归零
+    val pipelineStartMillis by viewModel.pipelineStartMillis.collectAsStateWithLifecycle()
+    val modelGuide by viewModel.modelGuide.collectAsStateWithLifecycle()
+    val guideMobileConfirm by viewModel.guideMobileConfirm.collectAsStateWithLifecycle()
     var showRenameDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
 
-    // 从生成页/详情页/设置页返回时刷新"已生成笔记"与"LLM 配置"状态
+    // 从详情页/模型管理页返回时刷新"已生成笔记"与"LLM 配置"状态，并尝试从阻塞步续跑
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshExistingNote()
-                // 设置页配好 API Key 后返回，本页"生成笔记"按钮状态需要刷新
+                // 设置页配好 API Key 后返回，本页编排的配置判定需要刷新
                 viewModel.refreshLlmConfigured()
+                viewModel.resumePipelineIfBlocked()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // 未下载模型时弹出 Snackbar，引导去模型管理页下载
-    LaunchedEffect(transcribeState) {
-        if (transcribeState is TranscribeUiState.NeedModel) {
-            val result = snackbarHostState.showSnackbar(
-                message = "语音转写需要先下载识别模型",
-                actionLabel = "去下载",
-                duration = SnackbarDuration.Short,
-            )
-            viewModel.consumeTranscribeEvent()
-            if (result == SnackbarResult.ActionPerformed) {
-                onNavigateToModels()
-            }
-        }
-    }
-
-    val confirmInfo = (transcribeState as? TranscribeUiState.Confirm)?.info
-    if (confirmInfo != null) {
-        TranscribeConfirmDialog(
-            info = confirmInfo,
-            onDismiss = viewModel::dismissTranscribeConfirm,
-            onConfirm = viewModel::confirmTranscribe,
-        )
-    }
-
-    // 生成成功后自动跳转到笔记详情（后台任务完成）
+    // 生成成功后自动跳转到笔记详情（后台任务完成）；
+    // 跳转前再回查一次数据库：Success 指向的笔记若已不存在（陈旧成功态），
+    // 不跳详情页报错，而是清掉陈旧状态、停在完成视图（仅保留「重新生成」）
     LaunchedEffect(generateState) {
         val noteId = (generateState as? GenerateNoteUiState.Success)?.noteId
         if (noteId != null) {
-            viewModel.consumeGenerateSuccess()
-            onViewNoteClick(noteId)
+            if (viewModel.noteExists(noteId)) {
+                viewModel.consumeGenerateSuccess()
+                onViewNoteClick(noteId)
+            } else {
+                viewModel.clearStaleGenerateSuccess()
+            }
         }
     }
 
@@ -197,58 +182,102 @@ fun MetadataScreen(
         )
     }
 
-    Scaffold(
-        topBar = {
-            Column {
-                TopAppBar(
-                    title = { Text("视频详情") },
-                    navigationIcon = {
-                        IconButton(onClick = onBackClick) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "返回",
-                            )
-                        }
-                    },
-                    actions = {
-                        // 仅有笔记时显示重命名/删除
-                        if (existingNoteId != null) {
-                            IconButton(onClick = { showRenameDialog = true }) {
-                                Icon(
-                                    imageVector = Icons.Filled.Edit,
-                                    contentDescription = "重命名",
-                                )
-                            }
-                            IconButton(onClick = { showDeleteDialog = true }) {
-                                Icon(
-                                    imageVector = Icons.Filled.Delete,
-                                    contentDescription = "删除",
-                                )
-                            }
-                        }
-                    },
-                )
-                // Tab：视频信息 / 课堂笔记
-                TabRow(selectedTabIndex = selectedTab) {
-                    Tab(
-                        selected = selectedTab == 0,
-                        onClick = { selectedTab = 0 },
-                        text = { Text("视频信息") },
-                    )
-                    Tab(
-                        selected = selectedTab == 1,
-                        onClick = { selectedTab = 1 },
-                        text = { Text("课堂笔记") },
-                        // 无笔记时默认禁用；有字幕/生成中/失败时可点开，看进度 + 实时日志
-                        enabled = existingNoteId != null ||
-                            hasTranscriptForTab ||
-                            generateState is GenerateNoteUiState.Working ||
-                            generateState is GenerateNoteUiState.Failed,
+    // 无选择 / 选中未下载引导弹层（2026-10-24 合并包）
+    modelGuide?.let { guide ->
+        val anyMissing = guide.llm == GuideSideState.MISSING || guide.asr == GuideSideState.MISSING
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissModelGuide() },
+            title = { Text(if (anyMissing) "还没选模型" else "模型尚未下载") },
+            text = {
+                Column {
+                    guide.llm?.let { side ->
+                        Text(
+                            when (side) {
+                                GuideSideState.MISSING -> "语言模型：还没选，推荐组合为 ${guide.llmLine}"
+                                GuideSideState.UNDOWNLOADED -> "语言模型：${guide.llmLine} 尚未下载"
+                            },
+                        )
+                    }
+                    guide.asr?.let { side ->
+                        Text(
+                            when (side) {
+                                GuideSideState.MISSING -> "识别模型：还没选，推荐组合为 ${guide.asrLine}"
+                                GuideSideState.UNDOWNLOADED -> "识别模型：${guide.asrLine} 尚未下载"
+                            },
+                        )
+                    }
+                    Text(
+                        text = "一键下载并选用会按推荐组合补齐未选侧、下载已选未下载侧；下载完成后回到本页继续（阻塞步骤会自动续跑）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-            }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.guideDownloadAndSelect() }) {
+                    Text("一键下载并选用")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    viewModel.dismissModelGuide()
+                    onNavigateToModels(guide.manualSection)
+                }) { Text("自己去模型管理挑") }
+            },
+        )
+    }
+
+    // 引导一键下载的移动网络确认步骤
+    guideMobileConfirm?.let { targets ->
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissGuideMobileConfirm() },
+            title = { Text("移动网络下载确认") },
+            text = {
+                Text(
+                    "当前为移动网络，以下模型文件较大，确认下载吗？\n" +
+                        targets.joinToString("\n") { "· ${it.displayName}" },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmGuideMobile() }) { Text("确认下载") }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissGuideMobileConfirm() }) { Text("取消") }
+            },
+        )
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("视频详情") },
+                navigationIcon = {
+                    IconButton(onClick = onBackClick) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "返回",
+                        )
+                    }
+                },
+                actions = {
+                    // 仅有笔记时显示重命名/删除
+                    if (existingNoteId != null) {
+                        IconButton(onClick = { showRenameDialog = true }) {
+                            Icon(
+                                imageVector = Icons.Filled.Edit,
+                                contentDescription = "重命名",
+                            )
+                        }
+                        IconButton(onClick = { showDeleteDialog = true }) {
+                            Icon(
+                                imageVector = Icons.Filled.Delete,
+                                contentDescription = "删除",
+                            )
+                        }
+                    }
+                },
+            )
         },
-        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Box(
             modifier = Modifier
@@ -270,35 +299,122 @@ fun MetadataScreen(
                     )
                 }
                 is MetadataUiState.Success -> {
-                    // 文稿就绪（字幕/转写任一存在）才展示笔记生成入口
-                    val hasTranscript = (subtitleState as? SubtitleUiState.Fetched)
-                        ?.result?.segments?.isNotEmpty() == true
-                    if (selectedTab == 0) {
-                        MetadataContent(
+                    // 工序单推导：四步状态来自既有 UI 状态 + 编排状态（阻塞步）
+                    val stepsUi = remember(
+                        subtitleState, transcribeState, generateState,
+                        existingNoteId, pipelineState,
+                    ) {
+                        deriveProcessSteps(
                             info = state.info,
                             subtitleState = subtitleState,
                             transcribeState = transcribeState,
-                            onFetchSubtitles = viewModel::fetchSubtitles,
-                            onTranscribeClick = viewModel::onTranscribeClick,
-                            onTranscribeRetry = viewModel::retryTranscribe,
-                            onTranscribeCancel = viewModel::cancelTranscribe,
-                            onPlayClick = onPlayClick,
-                        )
-                    } else {
-                        // 课堂笔记 Tab：有笔记 → 渲染；生成中/无笔记 → 生成卡片 + 实时日志
-                        NoteTabScreen(
-                            existingNoteId = existingNoteId,
                             generateState = generateState,
-                            llmConfigured = llmConfigured,
-                            hasTranscript = hasTranscript,
-                            llmLogLines = llmLogLines,
-                            onGenerateClick = viewModel::startGenerate,
-                            onGenerateRetry = viewModel::retryGenerate,
-                            onGenerateCancel = viewModel::cancelGenerate,
-                            onViewNoteClick = onViewNoteClick,
-                            onNavigateToSettings = onNavigateToSettings,
-                            onPlayClick = onPlayClick,
+                            existingNoteId = existingNoteId,
+                            pipelineState = pipelineState,
                         )
+                    }
+                    // 工序单当前步的日志预览：生成中取 LLM 日志、转写中取 Worker 日志，互为兜底；
+                    // 只取本轮编排启动时刻之后的行，避免显示上一轮已取消任务的残留日志
+                    val latestLogLine = remember(
+                        llmLogLines, workerLogLines, stepsUi.running, pipelineLogStartMillis,
+                    ) {
+                        fun List<String>.thisRun(): List<String> =
+                            if (pipelineLogStartMillis <= 0L) {
+                                this
+                            } else {
+                                filter { line ->
+                                    val t = logLineTimeMillis(line)
+                                    t == null || t >= pipelineLogStartMillis
+                                }
+                            }
+                        val llmLines = llmLogLines.thisRun()
+                        val workerLines = workerLogLines.thisRun()
+                        val primary =
+                            if (stepsUi.running == ProcessRunning.GENERATE) {
+                                llmLines
+                            } else {
+                                workerLines
+                            }
+                        val fallback =
+                            if (stepsUi.running == ProcessRunning.GENERATE) {
+                                workerLines
+                            } else {
+                                llmLines
+                            }
+                        primary.lastOrNull() ?: fallback.lastOrNull()
+                    }
+                    // 完成视图：编排到 Done 即展示；existingNoteId 为空（笔记已被删 /
+                    // 陈旧成功态被清）时隐藏「查看笔记」，只保留「重新生成」
+                    val showCompleted = pipelineState == PipelineUiState.Done &&
+                        generateState !is GenerateNoteUiState.Working
+                    when {
+                        pipelineState == PipelineUiState.Cancelled -> {
+                            // 已取消：视频头 + 重新开始（不自动重启）
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(rememberScrollState()),
+                            ) {
+                                MetadataHeader(
+                                    info = state.info,
+                                    onPlayClick = onPlayClick,
+                                )
+                                CancelledView(
+                                    onRestart = viewModel::restartPipeline,
+                                )
+                            }
+                        }
+                        showCompleted -> {
+                            // 完成：视频头 + 查看笔记 / 重新生成
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(rememberScrollState()),
+                            ) {
+                                MetadataHeader(
+                                    info = state.info,
+                                    onPlayClick = onPlayClick,
+                                )
+                                CompletedNoteView(
+                                    noteId = existingNoteId,
+                                    onViewNoteClick = onViewNoteClick,
+                                    onRegenerate = viewModel::regenerate,
+                                )
+                            }
+                        }
+                        else -> {
+                            // 处理中 / 阻塞 / 失败：整页工序单接管主体
+                            ProcessStepsPage(
+                                info = state.info,
+                                stepsUi = stepsUi,
+                                latestLogLine = latestLogLine,
+                                pipelineStartMillis = pipelineStartMillis,
+                                onCancel = viewModel::cancelCurrentTask,
+                                onRetryTranscribe = viewModel::onStepRetryTranscribe,
+                                onRetryGenerate = viewModel::onStepRetryGenerate,
+                                onStepAction = { action ->
+                                    when (action) {
+                                        // 缺 ASR 模型 → 已就绪则续跑，否则弹引导（引导内可一键下载或跳模型管理）
+                                        ProcessStepAction.DOWNLOAD_MODEL ->
+                                            viewModel.onStepDownloadModelAction()
+                                        // 引擎未配置 → 本地：已就绪则续跑，否则弹引导；
+                                        // 云端：仍直达云端 API 分区（配好后返回自动续跑）
+                                        ProcessStepAction.CONFIGURE_LLM ->
+                                            if (effectiveEngineType == LlmEngineType.LOCAL) {
+                                                viewModel.onStepConfigureLlmAction()
+                                            } else {
+                                                onNavigateToModels(Routes.SECTION_LLM_CLOUD)
+                                            }
+                                        // 本地生成熔断 → 云端 API 分区直达（切换并配好后返回自动续跑）
+                                        ProcessStepAction.SWITCH_TO_CLOUD ->
+                                            onNavigateToModels(Routes.SECTION_LLM_CLOUD)
+                                    }
+                                },
+                                cancellable = pipelineState == PipelineUiState.Running ||
+                                    stepsUi.running != ProcessRunning.NONE,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
                     }
                 }
                 is MetadataUiState.Error -> {
@@ -312,23 +428,13 @@ fun MetadataScreen(
     }
 }
 
-/** 元信息成功态：封面 + 标题 + 平台徽标 + 时长 + 作者 + 字幕卡片（含语音转写）+ 播放按钮。 */
+/** 视频头：封面 + 标题 + 平台徽标 + 时长 + 作者 + 播放按钮（完成 / 已取消态共用）。 */
 @Composable
-private fun MetadataContent(
+private fun MetadataHeader(
     info: VideoInfo,
-    subtitleState: SubtitleUiState,
-    transcribeState: TranscribeUiState,
-    onFetchSubtitles: () -> Unit,
-    onTranscribeClick: () -> Unit,
-    onTranscribeRetry: () -> Unit,
-    onTranscribeCancel: () -> Unit,
     onPlayClick: (storageKey: String, seconds: Long) -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-    ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
         if (info.coverUrl.isNotBlank()) {
             AsyncImage(
@@ -416,16 +522,79 @@ private fun MetadataContent(
             }
             Spacer(modifier = Modifier.height(VideoNotesTokens.Space16))
         }
-        SubtitleCard(
-            state = subtitleState,
-            transcribeState = transcribeState,
-            onFetchClick = onFetchSubtitles,
-            onRetryClick = onFetchSubtitles,
-            onRefreshClick = onFetchSubtitles,
-            onTranscribeClick = onTranscribeClick,
-            onTranscribeRetry = onTranscribeRetry,
-            onTranscribeCancel = onTranscribeCancel,
+    }
+}
+
+/**
+ * 完成视图：处理已完成。noteId 非空时提供「查看笔记 / 重新生成」；
+ * 为空（笔记已被删除、仅剩陈旧完成态）时只保留「重新生成」，不给死入口。
+ */
+@Composable
+private fun CompletedNoteView(
+    noteId: Long?,
+    onViewNoteClick: (Long) -> Unit,
+    onRegenerate: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = if (noteId != null) "笔记已生成" else "处理已完成",
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onSurface,
         )
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space4))
+        Text(
+            text = if (noteId != null) {
+                "课堂笔记已保存到知识库。重新生成会按当前引擎再跑一次生成任务。"
+            } else {
+                "这篇笔记已不存在。可以重新生成一份。"
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space16))
+        if (noteId != null) {
+            Button(
+                onClick = { onViewNoteClick(noteId) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("查看笔记")
+            }
+            Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
+        }
+        OutlinedButton(
+            onClick = onRegenerate,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("重新生成")
+        }
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space24))
+    }
+}
+
+/** 已取消视图：处理被用户中止，提供手动重新开始（不自动重启）。 */
+@Composable
+private fun CancelledView(
+    onRestart: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = "已取消处理",
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space4))
+        Text(
+            text = "这次处理已停止。重新开始后将自动按顺序处理，已获取的文稿会直接复用。",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space16))
+        Button(
+            onClick = onRestart,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("重新开始")
+        }
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space24))
     }
 }
@@ -449,100 +618,5 @@ private fun MetaChip(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = VideoNotesTokens.Space4),
         )
-    }
-}
-
-/** 课堂笔记 Tab：有笔记 → 富渲染；否则 → 生成卡片（生成中附实时日志）。 */
-@Composable
-private fun NoteTabScreen(
-    existingNoteId: Long?,
-    generateState: GenerateNoteUiState,
-    llmConfigured: Boolean,
-    hasTranscript: Boolean,
-    llmLogLines: List<String>,
-    onGenerateClick: () -> Unit,
-    onGenerateRetry: () -> Unit,
-    onGenerateCancel: () -> Unit,
-    onViewNoteClick: (Long) -> Unit,
-    onNavigateToSettings: () -> Unit,
-    onPlayClick: (storageKey: String, seconds: Long) -> Unit,
-) {
-    if (existingNoteId != null) {
-        NoteTabContent(noteId = existingNoteId, onPlayClick = onPlayClick)
-        return
-    }
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(vertical = VideoNotesTokens.Space8),
-    ) {
-        Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
-        // 生成中 / 失败 / 有文稿待生成 → 生成卡片；无文稿 → 引导先去取字幕
-        if (hasTranscript || generateState !is GenerateNoteUiState.Idle) {
-            NoteGenerateCard(
-                llmConfigured = llmConfigured,
-                existingNoteId = null,
-                generateState = generateState,
-                onGenerateClick = onGenerateClick,
-                onGenerateRetry = onGenerateRetry,
-                onGenerateCancel = onGenerateCancel,
-                onViewNoteClick = onViewNoteClick,
-                onSettingsClick = onNavigateToSettings,
-            )
-            // 实时日志：生成中显示在生成卡片下方
-            if (generateState is GenerateNoteUiState.Working) {
-                Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
-                RealtimeLogPanel(
-                    lines = llmLogLines,
-                    isRunning = true,
-                )
-            }
-        } else {
-            Text(
-                text = "还没有字幕文稿，请先到「视频信息」页获取字幕或完成语音转写，再回来生成笔记。",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(modifier = Modifier.height(VideoNotesTokens.Space24))
-    }
-}
-
-/** 课堂笔记 Tab：按 noteId 加载笔记，用 MarkdownReader 富渲染。 */
-@Composable
-private fun NoteTabContent(
-    noteId: Long,
-    onPlayClick: (storageKey: String, seconds: Long) -> Unit,
-    viewModel: NoteTabViewModel = hiltViewModel(),
-) {
-    val markdown by viewModel.markdown.collectAsStateWithLifecycle()
-
-    LaunchedEffect(noteId) {
-        viewModel.load(noteId)
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(vertical = VideoNotesTokens.Space8),
-    ) {
-        if (markdown.isNotBlank()) {
-            com.zola.videonotes.ui.reader.MarkdownReader(
-                markdown = markdown,
-                onPillClick = { seconds ->
-                    viewModel.storageKey?.let { key -> onPlayClick(key, seconds) }
-                },
-                onLinkClick = { /* 预留 */ },
-            )
-        } else {
-            Text(
-                text = "笔记加载中…",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(modifier = Modifier.height(VideoNotesTokens.Space24))
     }
 }

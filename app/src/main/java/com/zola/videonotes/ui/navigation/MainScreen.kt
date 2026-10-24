@@ -33,11 +33,12 @@ private enum class MainTab(val route: String, val label: String) {
 @Composable
 fun MainScreen(
     onEntryClick: (storageKey: String, noteId: Long?) -> Unit,
-    onAddVideo: (String) -> Unit,
-    onNavigateToModels: () -> Unit,
+    onAddVideoClick: () -> Unit,
+    onNavigateToModels: (section: String) -> Unit,
     onLicensesClick: () -> Unit,
     onBiliLoginClick: () -> Unit,
     onNavigateToOps: () -> Unit,
+    onNavigateToPromptEditor: () -> Unit = {},
     startTab: String = MainTab.KNOWLEDGE.route,
 ) {
     val tabNavController = rememberNavController()
@@ -82,7 +83,7 @@ fun MainScreen(
             composable(MainTab.KNOWLEDGE.route) {
                 KnowledgeBaseScreen(
                     onEntryClick = { entry -> onEntryClick(entry.storageKey, entry.noteId) },
-                    onAddVideo = onAddVideo,
+                    onAddVideoClick = onAddVideoClick,
                 )
             }
             composable(MainTab.SETTINGS.route) {
@@ -91,6 +92,7 @@ fun MainScreen(
                     onLicensesClick = onLicensesClick,
                     onBiliLoginClick = onBiliLoginClick,
                     onNavigateToOps = onNavigateToOps,
+                    onNavigateToPromptEditor = onNavigateToPromptEditor,
                 )
             }
         }

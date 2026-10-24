@@ -12,6 +12,7 @@ import com.zola.videonotes.domain.model.storageKey
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.first
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -50,6 +51,7 @@ class NoteGenerator @Inject constructor(
     private val noteDao: NoteDao,
     private val engineProvider: LlmEngineProvider,
     private val promptLoader: PromptLoader,
+    private val promptOverrides: PromptOverrides,
     @ApplicationContext private val appContext: Context,
 ) {
 
@@ -76,7 +78,16 @@ class NoteGenerator @Inject constructor(
             return Result.failure(IOException("请先获取字幕或完成语音转写"))
         }
 
-        val system = promptLoader.load(engine.systemPromptAsset)
+        val system = runCatching {
+            promptOverrides.systemFor(engine.type).first()
+        }.onFailure {
+            llmLog("自定义提示词读取失败，已回退默认提示词")
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(
+                    appContext, "自定义提示词读取失败，已回退默认", android.widget.Toast.LENGTH_LONG,
+                ).show()
+            }
+        }.getOrNull() ?: promptLoader.load(engine.systemPromptAsset)
         val transcriptText = formatTranscript(segments)
         llmLog(
             "笔记生成开始：引擎=${engineLabel(engine)}（${engine.modelLabel}），" +
@@ -98,6 +109,13 @@ class NoteGenerator @Inject constructor(
         onProgress(GenerateStage.VALIDATING, 0)
         val timestamps = TimestampValidator.extractTimestamps(markdown)
         llmLog("时间戳门禁：检查 ${timestamps.size} 个时间点")
+        // 2026-10-24 英文案：合格笔记恒含时间戳，0 时间点恒等于结构失败。
+        // 旧逻辑下 findFailures 对空集返回空，门禁“全部通过”空通过，结构全失的
+        // 输出一路存成正式笔记——此处改为失败优先，不再放行。
+        if (timestamps.isEmpty()) {
+            llmLog("时间戳门禁：生成结果不含时间戳，拒绝存库")
+            return Result.failure(IOException("生成结果不含时间戳，请重试"))
+        }
         var failures = TimestampValidator.findFailures(timestamps, segments)
         if (failures.isNotEmpty()) {
             llmLog("时间戳门禁：${failures.size} 个时间点未通过，进入修正重试")

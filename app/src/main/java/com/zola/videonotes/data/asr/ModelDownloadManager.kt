@@ -1,11 +1,12 @@
 package com.zola.videonotes.data.asr
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
+import com.zola.videonotes.data.download.MobileDownloadConsent
+import com.zola.videonotes.data.download.ModelFileDownloader
+import com.zola.videonotes.data.download.NetworkGate
+import com.zola.videonotes.data.download.Sha256
 import com.zola.videonotes.di.ApplicationScope
 import com.zola.videonotes.domain.asr.AsrModel
-import com.zola.videonotes.domain.asr.AsrModelFile
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -15,29 +16,32 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
+import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * ASR 模型下载管理器：HuggingFace 直链下载到应用私有目录（随卸载清除）。
+ * ASR 模型下载管理器（一期 WP4/WP6 改造）：
  *
- * - OkHttp 流式下载，支持 Range 断点续传；暂停 = 取消协程，下次继续从本地长度续传
- * - 进度通过 StateFlow 对外，UI 展示百分比/已下载字节
- * - 下载前检查 Wi-Fi（模型固定仅 Wi-Fi 下载）
- * - 协程取消会同步 cancel 底层的 OkHttp Call，避免卡在阻塞 read()
+ * - 单文件下载走通用内核 [ModelFileDownloader]（断点续传、取消同步 cancel Call）；
+ * - 逐文件 sha256 强校验：下载后逐个验（内核内完成）、启动 refreshAll 复验
+ *   （指纹缓存避免反复重算），不符删该文件 + 校验失败文案（与 LLM 侧同口径）；
+ * - 「仅 Wi-Fi 下载」开关接回（读 [AsrPreferences.wifiOnly]，即设置页同一开关）：
+ *   开关开 → 非 Wi-Fi 拦截（文案不变）；开关关 → 放行移动网络，
+ *   单文件 > 500 MB 首次需一次性确认（[MobileDownloadConsent]，仅内存）。
  */
 @Singleton
 class ModelDownloadManager @Inject constructor(
-    private val okHttpClient: OkHttpClient,
+    private val downloader: ModelFileDownloader,
+    private val prefs: AsrPreferences,
+    private val consent: MobileDownloadConsent,
     @ApplicationContext private val context: Context,
     @ApplicationScope private val appScope: CoroutineScope,
 ) {
@@ -75,21 +79,24 @@ class ModelDownloadManager @Inject constructor(
     private val _states = MutableStateFlow<Map<String, ModelDlState>>(emptyMap())
     val states: StateFlow<Map<String, ModelDlState>> = _states.asStateFlow()
 
-    /** 某个模型的下载状态流（UI 层订阅）。 */
-    fun stateOf(modelId: String): Flow<ModelDlState> =
-        states.map { it[modelId] ?: ModelDlState(modelId, DlStatus.NOT_DOWNLOADED, 0, totalOf(modelId)) }
+    /** 等待「移动网络大文件下载」一次性确认的条目 id（UI 弹确认框用）。 */
+    private val _pendingMobileConfirm = MutableStateFlow<Set<String>>(emptySet())
+    val pendingMobileConfirm: StateFlow<Set<String>> = _pendingMobileConfirm.asStateFlow()
+
+    /** 已验文件指纹缓存：绝对路径 → (长度, 修改时间)，避免每次启动全量重算哈希。 */
+    private val verifiedFingerprints = ConcurrentHashMap<String, Pair<Long, Long>>()
 
     private val jobs = ConcurrentHashMap<String, Job>()
 
     init {
-        // 启动时扫描本地已下载的模型（IO 线程，不阻塞注入）
+        // 启动时扫描本地已下载模型并逐文件强校验（IO 线程，不阻塞注入）
         appScope.launch { refreshAll() }
     }
 
     /** 模型根目录：filesDir/models/<modelId>/。 */
     fun modelDir(modelId: String): File = File(File(context.filesDir, "models"), modelId)
 
-    /** 完整性判断：全部文件存在且大小 > 0。可在 JVM 单元测试中用伴生函数验证逻辑。 */
+    /** 同步完整性：全部文件存在且大小与清单真值精确一致（强校验见 refreshAll 的哈希复验）。 */
     fun isDownloaded(modelId: String): Boolean =
         isModelComplete(modelDir(modelId), AsrModelCatalog.get(modelId))
 
@@ -103,13 +110,19 @@ class ModelDownloadManager @Inject constructor(
             }
             return
         }
-        updateState(modelId) { it.copy(status = DlStatus.DOWNLOADING, error = null) }
         jobs[modelId] = appScope.launch {
             try {
-                // 模型固定仅 Wi-Fi 下载（设置页开关已移除）
-                if (!isWifiConnected()) {
-                    throw IOException("当前为移动数据网络，模型仅支持 Wi-Fi 下载，请连接 Wi-Fi 后重试")
+                // 网络门：非 Wi-Fi 时大文件首次下载需一次性确认（仅内存）；
+                // 2026-10-24 合并包删除「仅 Wi-Fi」开关后，移动网络默认放行，不再拦截。
+                if (!NetworkGate.isWifiConnected(context)) {
+                    val biggest = model.files.maxOfOrNull { it.sizeBytes } ?: 0L
+                    if (consent.needsConsent(modelId, biggest)) {
+                        _pendingMobileConfirm.value = _pendingMobileConfirm.value + modelId
+                        updateState(modelId) { it.copy(status = DlStatus.PAUSED, error = null) }
+                        return@launch
+                    }
                 }
+                updateState(modelId) { it.copy(status = DlStatus.DOWNLOADING, error = null) }
                 downloadAllFiles(model) { done, total ->
                     updateState(modelId) { it.copy(downloadedBytes = done, totalBytes = total) }
                 }
@@ -121,7 +134,9 @@ class ModelDownloadManager @Inject constructor(
                 updateState(modelId) { it.copy(status = DlStatus.PAUSED) }
                 throw e
             } catch (e: Exception) {
-                val msg = if (e is IOException) {
+                val msg = if (e is UnknownHostException) {
+                    "无法解析下载服务器域名，请检查网络后重试"
+                } else if (e is IOException) {
                     e.message ?: "网络错误，请检查网络后重试"
                 } else {
                     "下载失败：${e.message ?: e.javaClass.simpleName}"
@@ -131,6 +146,18 @@ class ModelDownloadManager @Inject constructor(
                 jobs.remove(modelId)
             }
         }
+    }
+
+    /** 移动网络下载确认（UI 确认后调用）：记下同意并重新开始下载。 */
+    fun confirmMobileDownload(modelId: String) {
+        consent.grant(modelId)
+        _pendingMobileConfirm.value = _pendingMobileConfirm.value - modelId
+        startDownload(modelId)
+    }
+
+    /** 移动网络下载确认被取消：仅清待确认标记。 */
+    fun dismissMobileConfirm(modelId: String) {
+        _pendingMobileConfirm.value = _pendingMobileConfirm.value - modelId
     }
 
     /** 暂停下载（可续传）。任务不在运行时直接标记为 PAUSED。 */
@@ -148,6 +175,7 @@ class ModelDownloadManager @Inject constructor(
     suspend fun deleteModel(modelId: String) = withContext(Dispatchers.IO) {
         pauseDownload(modelId)
         modelDir(modelId).deleteRecursively()
+        verifiedFingerprints.keys.removeAll { it.contains(modelId) }
         updateState(modelId) {
             it.copy(
                 status = DlStatus.NOT_DOWNLOADED,
@@ -161,9 +189,43 @@ class ModelDownloadManager @Inject constructor(
     private suspend fun refreshAll() = withContext(Dispatchers.IO) {
         for (model in AsrModelCatalog.models) {
             val dir = modelDir(model.id)
-            val done = model.files.sumOf { File(dir, it.name).takeIf { f -> f.exists() }?.length() ?: 0L }
-            val status = if (isModelComplete(dir, model)) DlStatus.COMPLETED else DlStatus.NOT_DOWNLOADED
-            updateState(model.id) { ModelDlState(model.id, status, done, model.totalBytes) }
+            var done = model.files.sumOf { File(dir, it.name).takeIf { f -> f.exists() }?.length() ?: 0L }
+            var error: String? = null
+            val status = when {
+                !isModelComplete(dir, model) -> DlStatus.NOT_DOWNLOADED
+                verifyAllFiles(dir, model) -> DlStatus.COMPLETED
+                else -> {
+                    // 大小达标但 sha256 不符：删掉不符文件（与 LLM 侧同语义）
+                    deleteMismatchedFiles(dir, model)
+                    done = model.files.sumOf { File(dir, it.name).takeIf { f -> f.exists() }?.length() ?: 0L }
+                    error = "模型文件校验失败（SHA-256 不匹配），已删除，请重新下载"
+                    DlStatus.NOT_DOWNLOADED
+                }
+            }
+            updateState(model.id) { ModelDlState(model.id, status, done, model.totalBytes, error) }
+        }
+    }
+
+    /** 逐文件哈希复验（指纹缓存命中直接通过）。须在 IO 线程调用。 */
+    private fun verifyAllFiles(dir: File, model: AsrModel): Boolean =
+        model.files.all { mf ->
+            val f = File(dir, mf.name)
+            val expected = mf.sha256 ?: return@all true
+            val fp = f.length() to f.lastModified()
+            if (verifiedFingerprints[f.absolutePath] == fp) return@all true
+            val ok = Sha256.matches(f, expected)
+            if (ok) verifiedFingerprints[f.absolutePath] = fp
+            ok
+        }
+
+    private fun deleteMismatchedFiles(dir: File, model: AsrModel) {
+        for (mf in model.files) {
+            val expected = mf.sha256 ?: continue
+            val f = File(dir, mf.name)
+            if (f.exists() && !Sha256.matches(f, expected)) {
+                f.delete()
+                verifiedFingerprints.remove(f.absolutePath)
+            }
         }
     }
 
@@ -172,7 +234,6 @@ class ModelDownloadManager @Inject constructor(
         onProgress: (doneBytes: Long, totalBytes: Long) -> Unit,
     ) = withContext(Dispatchers.IO) {
         val dir = modelDir(model.id).apply { mkdirs() }
-        // 各文件的实际总大小（从 HTTP 头解析，目录值仅为估算）
         val fileTotals = mutableMapOf<String, Long>()
         fun currentDone(): Long =
             model.files.sumOf { f ->
@@ -183,85 +244,21 @@ class ModelDownloadManager @Inject constructor(
             model.files.sumOf { fileTotals[it.name] ?: it.sizeBytes }
 
         for (file in model.files) {
-            downloadOneFile(
-                dir = dir,
-                file = file,
-                onFileProgress = { _, fileTotal ->
-                    fileTotals[file.name] = fileTotal
-                    onProgress(currentDone(), currentTotal())
-                },
-            )
-        }
-    }
-
-    /**
-     * 下载单个文件，支持 Range 断点续传。
-     * 语义：本地已有部分 → 带 Range 请求；服务器回 206 续传、200 则重下、416 表示本地已完整。
-     */
-    private suspend fun downloadOneFile(
-        dir: File,
-        file: AsrModelFile,
-        onFileProgress: (doneBytes: Long, totalBytes: Long) -> Unit,
-    ) {
-        val dest = File(dir, file.name)
-        var existing = if (dest.exists()) dest.length() else 0L
-        val request = Request.Builder()
-            .url(file.url)
-            .apply { if (existing > 0) header("Range", "bytes=$existing-") }
-            .get()
-            .build()
-
-        val response = okHttpClient.executeCancellable(request)
-        response.use { resp ->
-            val total: Long
-            val append: Boolean
-            when (resp.code) {
-                416 -> {
-                    // 本地文件已完整（Range 起点超出），无需下载
-                    onFileProgress(existing, existing)
-                    return
-                }
-                206 -> {
-                    append = true
-                    total = resp.header("Content-Range")
-                        ?.substringAfterLast('/')
-                        ?.toLongOrNull()
-                        ?: (existing + (resp.body?.contentLength() ?: 0L))
-                }
-                200 -> {
-                    if (existing > 0) {
-                        // 服务器不支持断点续传，删掉重下
-                        dest.delete()
-                        existing = 0
-                    }
-                    append = false
-                    total = resp.body?.contentLength()?.takeIf { it > 0 } ?: file.sizeBytes
-                }
-                else -> throw IOException("下载失败（HTTP ${resp.code}）")
+            val dest = File(dir, file.name)
+            downloader.download(
+                url = file.url,
+                dest = dest,
+                expectedSize = file.sizeBytes,
+                expectedSha256 = file.sha256,
+            ) { done, total ->
+                fileTotals[file.name] = total
+                onProgress(currentDone(), currentTotal())
             }
-            val body = resp.body ?: throw IOException("下载内容为空")
-            body.byteStream().use { input ->
-                FileOutputStream(dest, append).use { output ->
-                    val buf = ByteArray(64 * 1024)
-                    var done = existing
-                    onFileProgress(done, total)
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        output.write(buf, 0, n)
-                        done += n
-                        onFileProgress(done, total)
-                    }
-                }
+            // 下载内核已验过哈希，这里登记指纹供 refreshAll 复用
+            if (dest.exists()) {
+                verifiedFingerprints[dest.absolutePath] = dest.length() to dest.lastModified()
             }
         }
-    }
-
-    private fun isWifiConnected(): Boolean {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
-        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
     }
 
     private fun totalOf(modelId: String): Long = AsrModelCatalog.get(modelId).totalBytes
@@ -274,15 +271,15 @@ class ModelDownloadManager @Inject constructor(
 
     companion object {
         /**
-         * 模型目录完整性判断（纯函数，可在 JVM 单元测试）。
-         * 完成条件：全部文件存在且大小 > 0。
+         * 模型目录完整性判断（纯函数）：全部文件存在且大小与清单真值精确一致。
+         * （WP6 前为「> 0」弱判定；哈希强校验在 refreshAll/下载后逐文件执行。）
          */
         fun isModelComplete(
             dir: File,
             model: com.zola.videonotes.domain.asr.AsrModel,
         ): Boolean = model.files.all { f ->
             val file = File(dir, f.name)
-            file.exists() && file.length() > 0
+            file.exists() && file.length() == f.sizeBytes
         }
     }
 }

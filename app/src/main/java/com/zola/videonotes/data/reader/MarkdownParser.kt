@@ -11,14 +11,21 @@ import com.zola.videonotes.data.llm.TimestampValidator
 sealed interface MdBlock {
     data class Heading(val level: Int, val inlines: List<MdInline>) : MdBlock
     data class Paragraph(val inlines: List<MdInline>) : MdBlock
-    data class UnorderedList(val items: List<List<MdInline>>) : MdBlock
-    data class OrderedList(val items: List<List<MdInline>>) : MdBlock
+    data class UnorderedList(val items: List<ListItem>) : MdBlock
+    data class OrderedList(val items: List<ListItem>) : MdBlock
     data class CodeBlock(val language: String?, val code: String) : MdBlock
     data class Quote(val inlines: List<MdInline>) : MdBlock
     data class Table(val header: List<String>, val rows: List<List<String>>) : MdBlock
     data class Details(val summary: String, val blocks: List<MdBlock>) : MdBlock
     data object Divider : MdBlock
 }
+
+/** 列表项：indent 为缩进层级（2 空格一级，嵌套列表用）；number 仅有序列表有（原文编号，渲染时保留）。 */
+data class ListItem(
+    val inlines: List<MdInline>,
+    val indent: Int = 0,
+    val number: Int? = null,
+)
 
 /** Markdown 行内元素。 */
 sealed interface MdInline {
@@ -45,17 +52,17 @@ object MarkdownParser {
      */
     private val INLINE_REGEX = Regex(
         "(" + TimestampValidator.PILL_REGEX.pattern + ")" + // 1: pill，2: 小时部分
-            """|\[([^\]\n]+)\]\(([^)\s\n]+)\)""" + // 3,4: [文本](url)
+            """|\[((?:[^\]\n]|\](?!\())+?)\]\(([^)\s\n]+(?:\)[^)\s\n]*)*)\)""" + // 3,4: [文本](url)，文本可含 ]（非 ]( 者），URL 可含成对括号
             """|`([^`\n]+)`""" + // 5: 行内代码
             """|\*\*(.+?)\*\*""" + // 6: 粗体（非贪婪）
             """|\*([^*\n]+?)\*""", // 7: 斜体
     )
 
-    private val HEADING_REGEX = Regex("""^(#{1,6})\s+(.*)$""")
+    private val HEADING_REGEX = Regex("""^(#{1,6})\s*(.*)$""")
     private val UNORDERED_REGEX = Regex("""^\s*[-*]\s+(.+)$""")
-    private val ORDERED_REGEX = Regex("""^\s*\d+[.)]\s+(.+)$""")
+    private val ORDERED_REGEX = Regex("""^\s*(\d+)[.)]\s+(.+)$""")
     private val DIVIDER_REGEX = Regex("""^\s*(---|\*\*\*|___)\s*$""")
-    private val TABLE_SEPARATOR_REGEX = Regex("""^\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$""")
+    private val TABLE_SEPARATOR_REGEX = Regex("""^\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$""")
     private val SUMMARY_REGEX = Regex("""<summary>(.*?)</summary>""")
 
     /** 解析全文为块列表。 */
@@ -101,24 +108,45 @@ object MarkdownParser {
                     i++
                 }
                 isTableHeader(lines, i) -> {
-                    val (block, next) = parseTable(lines, i)
+                    val (block, next) = parseTable(lines, i, i + 2)
+                    blocks.add(block)
+                    i = next
+                }
+                isTableWithoutSeparator(lines, i) -> {
+                    val (block, next) = parseTable(lines, i, i + 1)
                     blocks.add(block)
                     i = next
                 }
                 UNORDERED_REGEX.matches(line) -> {
-                    val items = mutableListOf<List<MdInline>>()
+                    val items = mutableListOf<ListItem>()
                     while (i < lines.size && UNORDERED_REGEX.matches(lines[i]) &&
                         !DIVIDER_REGEX.matches(lines[i].trim())
                     ) {
-                        items.add(parseInlines(UNORDERED_REGEX.find(lines[i])!!.groupValues[1].trim()))
+                        val raw = lines[i]
+                        val indent = (raw.length - raw.trimStart().length) / 2
+                        items.add(
+                            ListItem(
+                                inlines = parseInlines(UNORDERED_REGEX.find(raw)!!.groupValues[1].trim()),
+                                indent = indent,
+                            ),
+                        )
                         i++
                     }
                     blocks.add(MdBlock.UnorderedList(items))
                 }
                 ORDERED_REGEX.matches(line) -> {
-                    val items = mutableListOf<List<MdInline>>()
+                    val items = mutableListOf<ListItem>()
                     while (i < lines.size && ORDERED_REGEX.matches(lines[i])) {
-                        items.add(parseInlines(ORDERED_REGEX.find(lines[i])!!.groupValues[1].trim()))
+                        val raw = lines[i]
+                        val m = ORDERED_REGEX.find(raw)!!
+                        val indent = (raw.length - raw.trimStart().length) / 2
+                        items.add(
+                            ListItem(
+                                inlines = parseInlines(m.groupValues[2].trim()),
+                                indent = indent,
+                                number = m.groupValues[1].toIntOrNull(),
+                            ),
+                        )
                         i++
                     }
                     blocks.add(MdBlock.OrderedList(items))
@@ -190,6 +218,7 @@ object MarkdownParser {
             trimmed.startsWith(">") ||
             DIVIDER_REGEX.matches(line.trim()) ||
             isTableHeader(lines, i) ||
+            isTableWithoutSeparator(lines, i) ||
             UNORDERED_REGEX.matches(line) ||
             ORDERED_REGEX.matches(line)
     }
@@ -236,18 +265,44 @@ object MarkdownParser {
         return TABLE_SEPARATOR_REGEX.matches(lines[i + 1].trim())
     }
 
-    private fun parseTable(lines: List<String>, start: Int): Pair<MdBlock, Int> {
+    /**
+     * 无分隔行表格启发式识别（小模型常漏写 |---|---| 行）：
+     * 连续两行含竖线且列数一致，且首行不是列表项（避免把带竖线的列表项误判成表）。
+     * 标准分隔行表由 isTableHeader 优先处理，这里排除分隔行本身。
+     */
+    private fun isTableWithoutSeparator(lines: List<String>, i: Int): Boolean {
+        if (i + 1 >= lines.size) return false
+        val first = lines[i]
+        if (!first.contains("|")) return false
+        if (UNORDERED_REGEX.matches(first) || ORDERED_REGEX.matches(first)) return false
+        val second = lines[i + 1]
+        if (second.isBlank() || !second.contains("|")) return false
+        if (TABLE_SEPARATOR_REGEX.matches(second.trim())) return false
+        return splitRow(first).size == splitRow(second).size
+    }
+
+    private fun parseTable(lines: List<String>, start: Int, dataStart: Int): Pair<MdBlock, Int> {
         val header = splitRow(lines[start])
-        var i = start + 2 // 跳过分隔行
+        var i = dataStart
         val rows = mutableListOf<List<String>>()
         while (i < lines.size && lines[i].isNotBlank() && lines[i].contains("|")) {
-            rows.add(splitRow(lines[i]))
+            val cells = splitRow(lines[i])
+            // 行列数对齐：行短补空，行长把多余格并入最后一格（不静默丢内容）
+            val row = when {
+                cells.size < header.size -> cells + List(header.size - cells.size) { "" }
+                cells.size > header.size -> cells.take(header.size - 1) +
+                    cells.drop(header.size - 1).joinToString(" | ")
+                else -> cells
+            }
+            rows.add(row)
             i++
         }
         return MdBlock.Table(header, rows) to i
     }
 
+    /** 切分表格行：只切未转义的竖线，`\|` 还原为字面 `|`。 */
     private fun splitRow(line: String): List<String> =
         line.trim().removePrefix("|").removeSuffix("|")
-            .split("|").map { it.trim() }
+            .split(Regex("""(?<!\\)\|"""))
+            .map { it.replace("\\|", "|").trim() }
 }

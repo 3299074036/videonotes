@@ -42,12 +42,16 @@ class LlmSettings @Inject constructor(
     val model: Flow<String> = context.llmDataStore.data
         .map { it[Keys.MODEL] ?: "" }
 
-    /** 引擎类型：云端 BYOK 或本地 llama.cpp，默认云端。 */
+    /**
+     * 引擎类型（用户最后点选的存储值）：云端 BYOK 或本地 llama.cpp，默认本地。
+     * 注意：实际行为走 [LlmEngineResolver.effectiveEngineType] 的有效引擎口径，
+     * 存储值为云端但未配置齐全时回落本地，不要直接拿存储值做行为决策。
+     */
     val engineType: Flow<LlmEngineType> = context.llmDataStore.data
         .map { prefs ->
             when (prefs[Keys.ENGINE_TYPE]) {
-                LlmEngineType.LOCAL.name -> LlmEngineType.LOCAL
-                else -> LlmEngineType.CLOUD
+                LlmEngineType.CLOUD.name -> LlmEngineType.CLOUD
+                else -> LlmEngineType.LOCAL
             }
         }
 

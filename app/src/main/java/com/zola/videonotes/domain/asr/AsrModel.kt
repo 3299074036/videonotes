@@ -24,6 +24,18 @@ data class AsrModel(
 
         /** SenseVoice：单个 model.int8.onnx + tokens */
         SENSE_VOICE,
+
+        /** Paraformer：单个 model.int8.onnx + tokens（WP7） */
+        PARAFORMER,
+
+        /** Zipformer-CTC：单个 model.int8.onnx + tokens + bbpe.model（B 档新增） */
+        ZIPFORMER_CTC,
+
+        /** Zipformer Transducer：encoder + decoder + joiner + tokens + bpe.model（B 档新增） */
+        TRANSDUCER,
+
+        /** Dolphin CTC：单个 model.int8.onnx + tokens（B 档新增） */
+        DOLPHIN,
     }
 }
 
@@ -33,8 +45,10 @@ data class AsrModelFile(
     val name: String,
     /** HTTPS 直链 */
     val url: String,
-    /** 预估大小（字节，仅用于进度展示） */
+    /** 文件大小（字节，清单真值；下载完整性以此 + sha256 为准） */
     val sizeBytes: Long,
+    /** SHA-256（逐文件强校验用，WP6；可空表示暂不校验） */
+    val sha256: String? = null,
 )
 
 /** 格式化字节数为 "103 MB" / "12.9 MB" 风格，供模型管理页展示。 */

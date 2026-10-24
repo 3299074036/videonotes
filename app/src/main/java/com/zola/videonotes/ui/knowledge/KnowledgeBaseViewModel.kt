@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import javax.inject.Inject
 
@@ -61,7 +62,8 @@ data class KnowledgeEntry(
 
 /** 筛选 chips。 */
 enum class KnowledgeFilter {
-    ALL, HAS_NOTE, GENERATING, TRANSCRIBING
+    // 2026-10-24 合并包顺序：全部、转写中、生成中、有笔记（筛选逻辑按值匹配，不受顺序影响）
+    ALL, TRANSCRIBING, GENERATING, HAS_NOTE
 }
 
 /**
@@ -127,6 +129,11 @@ class KnowledgeBaseViewModel @Inject constructor(
             }
             combine(perVideo) { it.toList().sortedByDescending { e -> e.createdAt } }
         }
+
+    /** 条目总数（页头「共 N 篇笔记」用，不受搜索 / 筛选影响）。 */
+    val totalCount: StateFlow<Int> = allEntries
+        .map { it.size }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
     /** 搜索 + 筛选后的条目。 */
     val entries: StateFlow<List<KnowledgeEntry>> = combine(

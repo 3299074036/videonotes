@@ -9,16 +9,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
 /**
- * 视记主题：Material 3 Expressive + Material You 动态取色。
+ * 视记主题：纸上课堂静态色板（浅色纸面 / 深色夜纸 / OLED 暖纯黑）。
  *
- * @param darkTheme 深色模式（默认跟随系统）
- * @param dynamicColor 动态取色开关（默认开启，仅 Android 12+ 生效）
- * @param pureBlack OLED 纯黑开关（M6 设置页接入，默认关闭）
+ * @param darkTheme 深色模式（由 MainActivity 按主题偏好四档计算后传入）
+ * @param dynamicColor 动态取色开关（默认关闭：开启时 Android 12+ 的系统动态色会
+ *   覆盖纸面色板；能力保留，仅作显式开启时使用）
+ * @param pureBlack OLED 纯黑（主题偏好选「纯黑」时为 true）
  */
 @Composable
 fun VideoNotesTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    dynamicColor: Boolean = false,
     pureBlack: Boolean = false,
     content: @Composable () -> Unit,
 ) {

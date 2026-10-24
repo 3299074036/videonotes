@@ -1,6 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">视记</string>
-    <!-- 首页显著位置的合规提示 -->
-    <string name="compliance_banner">仅处理您拥有权利或已获授权的视频内容</string>
 </resources>

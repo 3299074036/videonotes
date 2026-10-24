@@ -1,5 +1,6 @@
 package com.zola.videonotes.ui.models
 
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -31,13 +32,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -45,6 +44,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -55,31 +55,60 @@ import com.zola.videonotes.data.llm.LlmPresets
 import com.zola.videonotes.data.llm.local.LocalLlmModels
 import com.zola.videonotes.data.llm.local.LocalModelDownloadManager
 import com.zola.videonotes.domain.asr.formatBytes
+import com.zola.videonotes.ui.components.PaperSegmentedRow
+import com.zola.videonotes.ui.navigation.Routes
 import com.zola.videonotes.ui.settings.LlmSettingsUiState
 import com.zola.videonotes.ui.settings.LlmSettingsViewModel
 import com.zola.videonotes.ui.theme.VideoNotesTokens
 
 /**
  * 统一模型管理页（v2）：
- * 一个页面管所有模型——顶部 Tab 切「大语言模型 / 语音识别」，
- * 大语言模型 Tab 内再分「云端 API / 本地模型」。
- * 下载/删除/进度条/暂停全在这里；设置页只留一个入口。
+ *
+ * - 完整版（section = [Routes.SECTION_FULL]）：顶部 Tab 切「大语言模型 / 语音识别」，
+ *   大语言模型 Tab 内再分「云端 API / 本地模型」，带已下载汇总条；
+ * - 直达版（section = llm_local / llm_cloud / asr）：从设置页三个模型行或工序单阻塞按钮
+ *   带分区进入，隐藏两排选择器与汇总条，直接呈现对应内容。
+ *
+ * 引擎选中态走有效引擎（[com.zola.videonotes.data.llm.LlmEngineResolver]）：
+ * 存储值为云端但未配齐时回落本地；完整版点「云端 API」会存存储值并跳云端直达页补齐配置。
  *
  * - LLM 逻辑复用 [LlmSettingsViewModel]（引擎二选一、云端配置、本地下载）；
- * - ASR 逻辑复用 [ModelManagementViewModel]（模型列表、下载；固定仅 Wi-Fi 下载）。
+ * - ASR 逻辑复用 [ModelManagementViewModel]（模型列表、下载；移动网络大文件首次确认）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModelManagementScreen(
+    section: String = Routes.SECTION_FULL,
     onBackClick: () -> Unit,
+    onOpenSection: (String) -> Unit = {},
     llmViewModel: LlmSettingsViewModel = hiltViewModel(),
     asrViewModel: ModelManagementViewModel = hiltViewModel(),
+    localVm: LocalModelsViewModel = hiltViewModel(),
 ) {
     val llmState by llmViewModel.uiState.collectAsStateWithLifecycle()
+    val effectiveEngine by llmViewModel.effectiveEngineType.collectAsStateWithLifecycle()
     val localDlStates by llmViewModel.localDlStates.collectAsStateWithLifecycle()
     val asrItems by asrViewModel.items.collectAsStateWithLifecycle()
+    val asrBrowse by asrViewModel.browseList.collectAsStateWithLifecycle()
 
-    var mainTab by remember { mutableIntStateOf(0) } // 0=大语言模型，1=语音识别
+    // 当前生效条两行名：语言模型（本地选中）与识别模型（选中）；未选为 null，条显「未选择」
+    val llmSelectedId by localVm.selectedId.collectAsStateWithLifecycle()
+    val llmSelectedEntry = llmSelectedId?.let { localVm.resolveEntry(it) }
+    val llmCurrentName = llmSelectedEntry?.displayName
+    val llmCurrentUndownloaded = llmSelectedId != null &&
+        localDlStates[llmSelectedId]?.status != LocalModelDownloadManager.DlStatus.COMPLETED
+    val asrSelectedItem = asrItems.firstOrNull { it.selected }
+    val asrCurrentName = asrSelectedItem?.model?.displayName
+    val asrCurrentUndownloaded = asrSelectedItem != null &&
+        asrSelectedItem.state.status != ModelDownloadManager.DlStatus.COMPLETED
+    // 云端生效时本地模型页单选框整组禁用（直达绕过 bug 根治）
+    val cloudDisabled = effectiveEngine == LlmEngineType.CLOUD
+
+    val directMode = section != Routes.SECTION_FULL
+    // 完整版的主 Tab 初值按入口分区（直达 ASR 时落在语音识别，直达模式下不渲染此 Tab）
+    var mainTab by remember(section) {
+        mutableIntStateOf(if (section == Routes.SECTION_ASR) 1 else 0)
+    }
     var passwordVisible by remember { mutableStateOf(false) }
 
     // 存储概览：已下载总量 + 模型个数（LLM + ASR）
@@ -112,7 +141,8 @@ fun ModelManagementScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState()),
         ) {
-            // 存储概览条
+            if (!directMode) {
+            // 存储概览条（仅完整版）
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -144,39 +174,70 @@ fun ModelManagementScreen(
             Spacer(modifier = Modifier.height(VideoNotesTokens.Space16))
 
             // 主 Tab：大语言模型 / 语音识别
-            SingleChoiceSegmentedButtonRow(
+            PaperSegmentedRow(
+                labels = listOf("大语言模型", "语音识别"),
+                selectedIndex = mainTab,
+                onSelect = { mainTab = it },
+                spread = true,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = VideoNotesTokens.Space16),
-            ) {
-                SegmentedButton(
-                    selected = mainTab == 0,
-                    onClick = { mainTab = 0 },
-                    shape = SegmentedButtonDefaults.itemShape(0, 2),
-                    label = { Text("大语言模型") },
-                )
-                SegmentedButton(
-                    selected = mainTab == 1,
-                    onClick = { mainTab = 1 },
-                    shape = SegmentedButtonDefaults.itemShape(1, 2),
-                    label = { Text("语音识别") },
-                )
-            }
+            )
 
             Spacer(modifier = Modifier.height(VideoNotesTokens.Space16))
+            }
 
-            if (mainTab == 0) {
-                LlmTabContent(
-                    llmState = llmState,
-                    localDlStates = localDlStates,
+            when {
+                // 直达：语音识别模型列表
+                section == Routes.SECTION_ASR -> AsrTabContent(
+                    browseList = asrBrowse,
+                    viewModel = asrViewModel,
+                    localVm = localVm,
+                    llmCurrentName = llmCurrentName,
+                    llmCurrentUndownloaded = llmCurrentUndownloaded,
+                    asrCurrentName = asrCurrentName,
+                    asrCurrentUndownloaded = asrCurrentUndownloaded,
+                )
+                // 直达：云端 API 配置表单
+                section == Routes.SECTION_LLM_CLOUD -> CloudConfigSection(
+                    state = llmState,
                     viewModel = llmViewModel,
                     passwordVisible = passwordVisible,
                     onPasswordVisibleChange = { passwordVisible = it },
                 )
-            } else {
-                AsrTabContent(
-                    items = asrItems,
+                // 直达：本地模型（一条列表，WP8）
+                section == Routes.SECTION_LLM_LOCAL -> LocalModelsContent(
+                    vm = localVm,
+                    cloudDisabled = cloudDisabled,
+                    llmCurrentName = llmCurrentName,
+                    llmCurrentUndownloaded = llmCurrentUndownloaded,
+                    asrCurrentName = asrCurrentName,
+                    asrCurrentUndownloaded = asrCurrentUndownloaded,
+                )
+                // 完整版：按主 Tab 呈现
+                mainTab == 0 -> LlmTabContent(
+                    llmState = llmState,
+                    localDlStates = localDlStates,
+                    viewModel = llmViewModel,
+                    localVm = localVm,
+                    effectiveEngine = effectiveEngine,
+                    onOpenCloudConfig = { onOpenSection(Routes.SECTION_LLM_CLOUD) },
+                    passwordVisible = passwordVisible,
+                    onPasswordVisibleChange = { passwordVisible = it },
+                    llmCurrentName = llmCurrentName,
+                    llmCurrentUndownloaded = llmCurrentUndownloaded,
+                    asrCurrentName = asrCurrentName,
+                    asrCurrentUndownloaded = asrCurrentUndownloaded,
+                    cloudDisabled = cloudDisabled,
+                )
+                else -> AsrTabContent(
+                    browseList = asrBrowse,
                     viewModel = asrViewModel,
+                    localVm = localVm,
+                    llmCurrentName = llmCurrentName,
+                    llmCurrentUndownloaded = llmCurrentUndownloaded,
+                    asrCurrentName = asrCurrentName,
+                    asrCurrentUndownloaded = asrCurrentUndownloaded,
                 )
             }
 
@@ -185,75 +246,55 @@ fun ModelManagementScreen(
     }
 }
 
-/** 大语言模型 Tab：云端/本地二选一 + 对应内容。 */
+/**
+ * 大语言模型 Tab（完整版）：引擎分段 + 对应内容。
+ * 分段顺序与设置页一致（本地在前），选中态与内容分支都走有效引擎；
+ * 点「云端 API」写存储值后跳云端直达页补齐配置。
+ */
 @Composable
 private fun LlmTabContent(
     llmState: LlmSettingsUiState,
     localDlStates: Map<String, LocalModelDownloadManager.ModelDlState>,
     viewModel: LlmSettingsViewModel,
+    localVm: LocalModelsViewModel,
+    effectiveEngine: LlmEngineType,
+    onOpenCloudConfig: () -> Unit,
     passwordVisible: Boolean,
     onPasswordVisibleChange: (Boolean) -> Unit,
+    llmCurrentName: String?,
+    llmCurrentUndownloaded: Boolean,
+    asrCurrentName: String?,
+    asrCurrentUndownloaded: Boolean,
+    cloudDisabled: Boolean,
 ) {
     Column {
-        SingleChoiceSegmentedButtonRow(
+        PaperSegmentedRow(
+            labels = listOf("📱 本地模型", "☁️ 云端 API"),
+            selectedIndex = if (effectiveEngine == LlmEngineType.LOCAL) 0 else 1,
+            onSelect = { index ->
+                if (index == 0) {
+                    viewModel.onEngineTypeChange(LlmEngineType.LOCAL)
+                } else {
+                    viewModel.onEngineTypeChange(LlmEngineType.CLOUD)
+                    onOpenCloudConfig()
+                }
+            },
+            spread = true,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = VideoNotesTokens.Space16),
-        ) {
-            SegmentedButton(
-                selected = llmState.engineType == LlmEngineType.CLOUD,
-                onClick = { viewModel.onEngineTypeChange(LlmEngineType.CLOUD) },
-                shape = SegmentedButtonDefaults.itemShape(0, 2),
-                label = { Text("☁️ 云端 API") },
-            )
-            SegmentedButton(
-                selected = llmState.engineType == LlmEngineType.LOCAL,
-                onClick = { viewModel.onEngineTypeChange(LlmEngineType.LOCAL) },
-                shape = SegmentedButtonDefaults.itemShape(1, 2),
-                label = { Text("📱 本地模型") },
-            )
-        }
+        )
 
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space16))
 
-        if (llmState.engineType == LlmEngineType.LOCAL) {
-            // 本地模式提示条
-            val currentModel = LocalLlmModels.ALL
-                .firstOrNull { it.id == llmState.localModelId }
-            val downloaded = currentModel?.let { m ->
-                localDlStates[m.id]?.status ==
-                    LocalModelDownloadManager.DlStatus.COMPLETED
-            } ?: false
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = VideoNotesTokens.Space16),
-            ) {
-                Text(
-                    text = buildString {
-                        if (currentModel != null) {
-                            append("当前：${currentModel.displayName}")
-                            append(if (downloaded) "（已下载）" else "（未下载）")
-                        } else {
-                            append("本地模式，断网可用")
-                        }
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.padding(VideoNotesTokens.Space12),
-                )
-            }
-            Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
-            LocalModelSection(
-                selectedId = llmState.localModelId,
-                dlStates = localDlStates,
-                onSelect = viewModel::onLocalModelSelect,
-                onDownload = viewModel::onLocalDownload,
-                onPause = viewModel::onLocalPause,
-                onDelete = viewModel::onLocalDelete,
+        if (effectiveEngine == LlmEngineType.LOCAL) {
+            LocalModelsContent(
+                vm = localVm,
+                cloudDisabled = cloudDisabled,
+                llmCurrentName = llmCurrentName,
+                llmCurrentUndownloaded = llmCurrentUndownloaded,
+                asrCurrentName = asrCurrentName,
+                asrCurrentUndownloaded = asrCurrentUndownloaded,
             )
         } else {
             CloudConfigSection(
@@ -266,15 +307,36 @@ private fun LlmTabContent(
     }
 }
 
-/** 语音识别 Tab：模型卡片（固定仅 Wi-Fi 下载）。 */
+/** 语音识别 Tab（合并包新人友好；第二轮修订：排序功能下架）：生效条恒显 → 用途筛选 → 已下载 → 推荐 → 更多模型。 */
 @Composable
 private fun AsrTabContent(
-    items: List<ModelManagementViewModel.ModelItemUi>,
+    browseList: ModelManagementViewModel.AsrBrowseList,
     viewModel: ModelManagementViewModel,
+    localVm: LocalModelsViewModel,
+    llmCurrentName: String?,
+    llmCurrentUndownloaded: Boolean,
+    asrCurrentName: String?,
+    asrCurrentUndownloaded: Boolean,
 ) {
+    val context = LocalContext.current
+    val useCaseFilter by viewModel.useCaseFilter.collectAsStateWithLifecycle()
+    val pendingMobile by viewModel.pendingMobileConfirm.collectAsStateWithLifecycle()
+    var moreExpanded by remember { mutableStateOf(false) }
+    var showTermDialog by remember { mutableStateOf(false) }
+
+    // 一次性提示（删除回落说明）以 Toast 呈现
+    LaunchedEffect(Unit) {
+        viewModel.userMessage.collect { msg ->
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    if (showTermDialog) {
+        TermInfoDialog(title = "术语说明", body = TermNotes.ALL) { showTermDialog = false }
+    }
+
     Column(
         modifier = Modifier.padding(horizontal = VideoNotesTokens.Space16),
-        verticalArrangement = Arrangement.spacedBy(VideoNotesTokens.Space12),
     ) {
         Text(
             text = "无字幕视频会自动用端侧语音识别兜底转写，全程不联网（模型下载除外）。" +
@@ -282,20 +344,130 @@ private fun AsrTabContent(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        items.forEach { item ->
-            AsrModelCard(
-                item = item,
-                onDownload = { viewModel.download(item.model.id) },
-                onPause = { viewModel.pause(item.model.id) },
-                onDelete = { viewModel.delete(item.model.id) },
-                onSelect = { viewModel.select(item.model.id) },
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
+        // 页顶「当前生效」条（恒显，单行本页模型，与本地模型页同款）
+        CurrentEffectBar(
+            currentName = asrCurrentName,
+            currentUndownloaded = asrCurrentUndownloaded,
+            cloudDisabled = false,
+        )
+        // 排序功能已下架（第二轮修订）：列表固定按推荐序排列，不再提供排序档切换。
+        UseCaseChips(
+            selected = useCaseFilter,
+            onSelect = { viewModel.setUseCaseFilter(it) },
+        )
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
+        if (browseList.downloaded.isNotEmpty()) {
+            SectionTitleRow(title = "已下载", hint = "")
+            browseList.downloaded.forEach { item ->
+                AsrModelRow(
+                    item = item,
+                    onDownload = { viewModel.download(item.model.id) },
+                    onPause = { viewModel.pause(item.model.id) },
+                    onDelete = { viewModel.delete(item.model.id) },
+                    onSelect = { viewModel.select(item.model.id) },
+                )
+            }
+        }
+        if (browseList.featured.isNotEmpty()) {
+            SectionTitleRow(title = "推荐", hint = "")
+            browseList.featured.forEach { item ->
+                AsrModelRow(
+                    item = item,
+                    onDownload = { viewModel.download(item.model.id) },
+                    onPause = { viewModel.pause(item.model.id) },
+                    onDelete = { viewModel.delete(item.model.id) },
+                    onSelect = { viewModel.select(item.model.id) },
+                )
+            }
+        }
+        if (browseList.rest.isNotEmpty()) {
+            SectionTitleRow(title = "更多模型", hint = "按需再挑")
+            if (moreExpanded) {
+                browseList.rest.forEach { item ->
+                    AsrModelRow(
+                        item = item,
+                        onDownload = { viewModel.download(item.model.id) },
+                        onPause = { viewModel.pause(item.model.id) },
+                        onDelete = { viewModel.delete(item.model.id) },
+                        onSelect = { viewModel.select(item.model.id) },
+                    )
+                }
+            }
+            TextButton(
+                onClick = { moreExpanded = !moreExpanded },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    if (moreExpanded) "收起 ↑" else "展开其余 ${browseList.rest.size} 个模型 ↓",
+                )
+            }
+        }
+        if (browseList.downloaded.isEmpty() && browseList.featured.isEmpty() && browseList.rest.isEmpty()) {
+            Text(
+                text = "没有符合该用途的模型",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = VideoNotesTokens.Space8),
             )
         }
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
         Text(
-            text = "模型仅支持 Wi-Fi 下载（含本地大语言模型）。",
+            text = "移动网络下载大文件首次会确认。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Text(
+            text = "注：除中文主力档外，其余模型的时间戳落点尚未逐项真机验证。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(onClick = { showTermDialog = true }) {
+            Text("术语说明 ⓘ")
+        }
+    }
+
+    // WP4：移动网络大文件下载的一次性确认
+    pendingMobile.firstOrNull()?.let { id ->
+        val item = (browseList.downloaded + browseList.featured + browseList.rest)
+            .firstOrNull { it.model.id == id }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { viewModel.dismissMobile(id) },
+            title = { Text("使用移动网络下载？") },
+            text = {
+                Text(
+                    text = "当前不是 Wi-Fi 网络。${item?.model?.displayName ?: ""}约 " +
+                        "${formatBytes(item?.model?.totalBytes ?: 0)}，确认使用移动网络下载吗？" +
+                        "确认后本次启动内不再询问。",
+                )
+            },
+            confirmButton = {
+                Button(onClick = { viewModel.confirmMobile(id) }) { Text("确认下载") }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissMobile(id) }) { Text("取消") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun SectionTitleRow(title: String, hint: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = VideoNotesTokens.Space12, bottom = VideoNotesTokens.Space4),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = title, style = MaterialTheme.typography.titleMedium)
+        if (hint.isNotBlank()) {
+            Spacer(modifier = Modifier.weight(1f))
+            Text(
+                text = hint,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -398,191 +570,9 @@ private fun CloudConfigSection(
     }
 }
 
-/** 本地模型区：模型卡片（下载/暂停/删除/选中）+ 说明（自 SettingsScreen 迁移）。 */
+/** 语音识别模型发丝线行（合并包新人友好：中文主名 + 英文副行 + 标签仅推荐/已下载；单选框未下载也可勾选）。 */
 @Composable
-private fun LocalModelSection(
-    selectedId: String,
-    dlStates: Map<String, LocalModelDownloadManager.ModelDlState>,
-    onSelect: (String) -> Unit,
-    onDownload: (String) -> Unit,
-    onPause: (String) -> Unit,
-    onDelete: (String) -> Unit,
-) {
-    Column(
-        modifier = Modifier.padding(horizontal = VideoNotesTokens.Space16),
-        verticalArrangement = Arrangement.spacedBy(VideoNotesTokens.Space12),
-    ) {
-        Text(
-            text = "离线生成，不上传数据。仅支持 Wi-Fi 下载。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = "注意：本地模式暂不生成知识地图（mermaid 图），以列表形式呈现。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        LocalLlmModels.ALL.forEach { model ->
-            val dlState = dlStates[model.id]
-                ?: LocalModelDownloadManager.ModelDlState(
-                    modelId = model.id,
-                    status = LocalModelDownloadManager.DlStatus.NOT_DOWNLOADED,
-                    downloadedBytes = 0,
-                    totalBytes = model.sizeBytes,
-                )
-            LocalModelCard(
-                model = model,
-                selected = selectedId == model.id,
-                dlState = dlState,
-                onSelect = { onSelect(model.id) },
-                onDownload = { onDownload(model.id) },
-                onPause = { onPause(model.id) },
-                onDelete = { onDelete(model.id) },
-            )
-        }
-    }
-}
-
-@Composable
-private fun LocalModelCard(
-    model: com.zola.videonotes.data.llm.local.LocalLlmModel,
-    selected: Boolean,
-    dlState: LocalModelDownloadManager.ModelDlState,
-    onSelect: () -> Unit,
-    onDownload: () -> Unit,
-    onPause: () -> Unit,
-    onDelete: () -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(VideoNotesTokens.CornerLarge),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
-    ) {
-        Column(modifier = Modifier.padding(VideoNotesTokens.Space16)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(
-                    selected = selected,
-                    onClick = onSelect,
-                )
-                Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = model.displayName,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        if (dlState.status == LocalModelDownloadManager.DlStatus.COMPLETED) {
-                            Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
-                            Text(
-                                text = "已下载 ✓",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = ColorDownloaded,
-                            )
-                        }
-                    }
-                    Text(
-                        text = "约 ${formatBytes(model.sizeBytes)}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(VideoNotesTokens.Space4))
-            Text(
-                text = model.description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = VideoNotesTokens.Space48),
-            )
-            Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
-
-            when (dlState.status) {
-                LocalModelDownloadManager.DlStatus.DOWNLOADING -> {
-                    LinearProgressIndicator(
-                        progress = { dlState.progress },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "下载中 ${(dlState.progress * 100).toInt()}% · " +
-                                "${formatBytes(dlState.downloadedBytes)} / ${formatBytes(dlState.totalBytes)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        TextButton(onClick = onPause) {
-                            Text("暂停")
-                        }
-                    }
-                }
-                LocalModelDownloadManager.DlStatus.PAUSED -> {
-                    Text(
-                        text = "已暂停 ${(dlState.progress * 100).toInt()}%，可断点续传",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
-                    Row(horizontalArrangement = Arrangement.spacedBy(VideoNotesTokens.Space8)) {
-                        Button(onClick = onDownload) {
-                            Text("继续")
-                        }
-                        TextButton(onClick = onDelete) {
-                            Text("删除")
-                        }
-                    }
-                }
-                LocalModelDownloadManager.DlStatus.FAILED -> {
-                    Text(
-                        text = dlState.error ?: "下载失败",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                    Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
-                    Row(horizontalArrangement = Arrangement.spacedBy(VideoNotesTokens.Space8)) {
-                        Button(onClick = onDownload) {
-                            Text("重试")
-                        }
-                        TextButton(onClick = onDelete) {
-                            Text("删除")
-                        }
-                    }
-                }
-                LocalModelDownloadManager.DlStatus.COMPLETED -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "已下载 ${formatBytes(dlState.downloadedBytes)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        TextButton(onClick = onDelete) {
-                            Text("删除")
-                        }
-                    }
-                }
-                LocalModelDownloadManager.DlStatus.NOT_DOWNLOADED -> {
-                    Button(onClick = onDownload) {
-                        Text("下载")
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** 语音识别模型卡片（自旧版 ModelManagementScreen 迁移）。 */
-@Composable
-private fun AsrModelCard(
+private fun AsrModelRow(
     item: ModelManagementViewModel.ModelItemUi,
     onDownload: () -> Unit,
     onPause: () -> Unit,
@@ -590,131 +580,130 @@ private fun AsrModelCard(
     onSelect: () -> Unit,
 ) {
     val state = item.state
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(VideoNotesTokens.CornerLarge),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
-    ) {
-        Column(modifier = Modifier.padding(VideoNotesTokens.Space16)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(
-                    selected = item.selected,
-                    onClick = onSelect,
-                )
-                Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = item.model.displayName,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        if (state.status == ModelDownloadManager.DlStatus.COMPLETED) {
-                            Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
-                            Text(
-                                text = "已下载 ✓",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = ColorDownloaded,
-                            )
-                        }
-                    }
-                    Text(
-                        text = "约 ${formatBytes(item.model.totalBytes)}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(VideoNotesTokens.Space4))
-            Text(
-                text = item.model.description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = VideoNotesTokens.Space48),
+    val completed = state.status == ModelDownloadManager.DlStatus.COMPLETED
+    val catalogEntry = com.zola.videonotes.data.catalog.CatalogStore.asrById(item.model.id)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        androidx.compose.material3.HorizontalDivider(
+            color = MaterialTheme.colorScheme.outlineVariant,
+        )
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // 行首单选框：唯一的选择表达；未下载行也可勾选（合并包），选后不自动下载
+            RadioButton(
+                selected = item.selected,
+                onClick = onSelect,
+                enabled = true,
             )
-            Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
-
-            when (state.status) {
-                ModelDownloadManager.DlStatus.DOWNLOADING -> {
-                    LinearProgressIndicator(
-                        progress = { state.progress },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "下载中 ${(state.progress * 100).toInt()}% · " +
-                                "${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        TextButton(onClick = onPause) {
-                            Text("暂停")
-                        }
-                    }
-                }
-                ModelDownloadManager.DlStatus.PAUSED -> {
+            Text(
+                text = item.model.displayName,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            // 标签只保留「推荐」与绿色「已下载 ✓」（第二轮修订：实测徽标全部下架）
+            if (catalogEntry?.recommended == true) {
+                Spacer(modifier = Modifier.width(VideoNotesTokens.Space4))
+                RowMiniTag("推荐")
+            }
+            if (completed) {
+                Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
+                Text(
+                    text = "已下载 ✓",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = ColorDownloaded,
+                )
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            // 右侧动作位严格只有两态：未下载「下载」、已下载「删除」。
+            // 下载中/已暂停/失败时右侧留空，状态与操作留在下方次级区。
+            when {
+                completed -> TextButton(onClick = onDelete) { Text("删除") }
+                state.status == ModelDownloadManager.DlStatus.NOT_DOWNLOADED -> Text(
+                    text = "下载",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable { onDownload() },
+                )
+            }
+        }
+        // 副行：英文原名 · 体积 · 时间戳说明（仅有实证的两档）
+        val subParts = mutableListOf<String>()
+        catalogEntry?.originalName?.let { subParts += it }
+        subParts += formatBytes(item.model.totalBytes)
+        asrTimestampNote(item.model.id)?.let { subParts += it }
+        Text(
+            text = subParts.joinToString(" · "),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = item.model.description,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        when (state.status) {
+            ModelDownloadManager.DlStatus.DOWNLOADING -> {
+                Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
+                LinearProgressIndicator(
+                    progress = { state.progress },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Text(
-                        text = "已暂停 ${(state.progress * 100).toInt()}%，可断点续传",
+                        text = "下载中 ${(state.progress * 100).toInt()}% · " +
+                            "${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
-                    Row(horizontalArrangement = Arrangement.spacedBy(VideoNotesTokens.Space8)) {
-                        Button(onClick = onDownload) {
-                            Text("继续")
-                        }
-                        TextButton(onClick = onDelete) {
-                            Text("删除")
-                        }
-                    }
+                    TextButton(onClick = onPause) { Text("暂停") }
                 }
-                ModelDownloadManager.DlStatus.FAILED -> {
+            }
+            ModelDownloadManager.DlStatus.PAUSED -> {
+                Spacer(modifier = Modifier.height(VideoNotesTokens.Space4))
+                Text(
+                    text = "已暂停 ${(state.progress * 100).toInt()}%，可断点续传",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row {
+                    TextButton(onClick = onDownload) { Text("继续") }
+                    TextButton(onClick = onDelete) { Text("删除") }
+                }
+            }
+            ModelDownloadManager.DlStatus.FAILED -> {
+                Spacer(modifier = Modifier.height(VideoNotesTokens.Space4))
+                Text(
+                    text = state.error ?: "下载失败",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Row {
+                    TextButton(onClick = onDownload) { Text("重试") }
+                    TextButton(onClick = onDelete) { Text("删除") }
+                }
+            }
+            ModelDownloadManager.DlStatus.COMPLETED -> {
+                Text(
+                    text = "已下载 ${formatBytes(state.downloadedBytes)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            ModelDownloadManager.DlStatus.NOT_DOWNLOADED -> {
+                state.error?.let { err ->
+                    Spacer(modifier = Modifier.height(VideoNotesTokens.Space4))
                     Text(
-                        text = state.error ?: "下载失败",
+                        text = err,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
-                    Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
-                    Row(horizontalArrangement = Arrangement.spacedBy(VideoNotesTokens.Space8)) {
-                        Button(onClick = onDownload) {
-                            Text("重试")
-                        }
-                        TextButton(onClick = onDelete) {
-                            Text("删除")
-                        }
-                    }
-                }
-                ModelDownloadManager.DlStatus.COMPLETED -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "已下载 ${formatBytes(state.downloadedBytes)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        TextButton(onClick = onDelete) {
-                            Text("删除")
-                        }
-                    }
-                }
-                ModelDownloadManager.DlStatus.NOT_DOWNLOADED -> {
-                    Button(onClick = onDownload) {
-                        Text("下载")
-                    }
                 }
             }
         }
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
     }
 }
 
-private val ColorDownloaded = androidx.compose.ui.graphics.Color(0xFF1B7A3D)
