@@ -149,11 +149,15 @@ class LocalModelsViewModel @Inject constructor(
         return UserCatalog.entryFor(id) ?: catalog.llmById(id) ?: registry.entryFor(id)
     }
 
-    /** 探针结论（动态已下载行与设探针门精选行展示用，指纹失效返回 null）。 */
+    /**
+     * 探针结论（动态已下载行与设探针门精选行展示用，指纹失效返回 null）。
+     * 扩围：老精选条目手动探针后也读无门结论（未探过为 null，副行不显示）；
+     * 选用探针门仍在 requestSelect/init 里先判 needsGate，本函数扩围不改变门。
+     */
     fun probeStateOf(entry: CatalogEntry): TemplateProbeState? = when {
         entry.source == CatalogSource.DYNAMIC -> registry.validProbe(entry)
         entry.requiresProbe -> llmPrefs.curatedProbeState(entry.toLocalLlmModel())
-        else -> null
+        else -> llmPrefs.curatedProbeStateForDisplay(entry.toLocalLlmModel())
     }
 
     /** C6：条目内存需求超过整机内存 → 禁用下载。 */
@@ -207,12 +211,12 @@ class LocalModelsViewModel @Inject constructor(
 
     // ---------- L-30 手动重新校验（A：单条；B：全部） ----------
 
-    /** 探针入口是否对该条目有意义：已下载 +（动态条目或设探针门精选条目）。 */
+    /**
+     * 探针入口是否对该条目有意义：已下载即有资格（扩围后，老精选也算）。
+     * 老精选的手动探针结论只展示、不拦选用（选用门仍只认动态/设门条目）。
+     */
     fun canRevalidate(entry: CatalogEntry): Boolean {
-        if (dlStates.value[entry.id]?.status != LocalModelDownloadManager.DlStatus.COMPLETED) {
-            return false
-        }
-        return entry.source == CatalogSource.DYNAMIC || entry.requiresProbe
+        return dlStates.value[entry.id]?.status == LocalModelDownloadManager.DlStatus.COMPLETED
     }
 
     /** 单条校验：跑完刷 registryTick，副行结论即时刷新（不等启动补探的延迟重扫）。 */

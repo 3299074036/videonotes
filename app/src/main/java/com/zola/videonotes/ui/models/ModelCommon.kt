@@ -142,12 +142,14 @@ val ColorDownloaded = androidx.compose.ui.graphics.Color(0xFF1B7A3D)
  * 模型行右侧固定列宽（两页共用）：动作槽（下载 / 删除右对齐）与管理态动作槽
  * （编辑 + 移除两个按钮，故更宽），让所有行的 ⓘ 与动作落在同一竖列上。
  * 宽度按内容实测收紧：动作槽 32dp 容纳两字裸文字（28dp）贴右，旧 52dp 左对齐
- * 会在下载右侧留 24dp 空隙；管理态 108dp 容纳编辑 + 移除。
+ * 会在下载右侧留 24dp 空隙；管理态 80dp 容纳编辑 + 移除两段裸文字（28+12+28=68dp，
+ * 余 12dp）：旧 108dp 是 TextButton 内边距时代的宽度，裸文字化后多出的 28dp
+ * 会挤名字栏（“中文增强”被截成“中文增”）。
  * 徽标（推荐 / 已下载）不再占固定槽，改为跟在名字后面 inline 排列。
  * 名称固定 titleMedium 单行全显，不再逐档缩放。
  */
 val ModelRowActionSlotWidth = 32.dp
-val ModelRowManageActionSlotWidth = 108.dp
+val ModelRowManageActionSlotWidth = 80.dp
 
 /** 模型行首贴左单选框（2026-10-25）：24dp 盒子画 20dp 圆点，替代 Material3
  * RadioButton 自带的 48dp 触摸盒（圆点两侧各 12dp 透明边，左边看起来空一截）。

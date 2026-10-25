@@ -228,6 +228,16 @@ class LocalLlmPreferences @Inject constructor(
         return curatedProbeStore.validState(model.id, f.length() to f.lastModified())
     }
 
+    /**
+     * 手动校验用的无门读数：老精选条目不设探针门，但手动探针后仍要在模型行展示结论。
+     * 仅供 UI 展示用；引擎探针门与拼装模式仍走带 requiresProbe 守卫的旧方法，不受影响。
+     */
+    fun curatedProbeStateForDisplay(model: LocalLlmModel): TemplateProbeState? {
+        val f = fileFor(model)
+        if (!f.exists()) return null
+        return curatedProbeStore.validState(model.id, f.length() to f.lastModified())
+    }
+
     /** 精选探针门条目探针定下的拼装模式（embedded/named），无有效记录返回 null。 */
     fun curatedProbeMode(model: LocalLlmModel): String? {
         if (!model.requiresProbe) return null

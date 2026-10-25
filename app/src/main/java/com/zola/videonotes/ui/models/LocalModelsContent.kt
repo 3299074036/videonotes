@@ -323,7 +323,7 @@ private fun CatalogEntryRow(
             ) {
                 if (manageMode) {
                     // 换行修复方案一：裸文字（与正常态下载/删除同款），不用 TextButton
-                    // 的内边距，108dp 槽绰绰有余；强制单行兜底，字体放大也不折行。
+                    // 的内边距，80dp 槽（68dp 内容 + 12dp 余量）刚好；强制单行兜底，字体放大也不折行。
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(
                             text = "编辑",
@@ -372,9 +372,13 @@ private fun CatalogEntryRow(
             }
         }
         Column(modifier = Modifier.padding(start = ModelRowSecondaryIndent)) {
-            // 探针结论（四态）：动态条目与设探针门的新精选条目
-            if (completed && (entry.source == CatalogSource.DYNAMIC || entry.requiresProbe)) {
-                ProbeVerdict(probe)
+            // 探针结论（四态）：动态条目与设探针门的新精选条目（未探过显示“待完成”）；
+            // 老精选条目只在手动探针后有结论时才显示，且结论只作提示、不拦选用。
+            if (completed && (entry.source == CatalogSource.DYNAMIC || entry.requiresProbe || probe != null)) {
+                ProbeVerdict(
+                    probe,
+                    informational = entry.source != CatalogSource.DYNAMIC && !entry.requiresProbe,
+                )
             }
             // 下载状态区
             when (state.status) {
@@ -459,9 +463,11 @@ private fun CatalogEntryRow(
     }
 }
 
-/** 探针四态文案：不可用结论如实说明原因，文件保留不自动删；OK 态只代表模板探针通过（元数据级），不代表解码期实测通过，故文案明确写清，避免用户把模板校验当成生成保证（L-31）。 */
+/** 探针四态文案：不可用结论如实说明原因，文件保留不自动删；OK 态只代表模板探针通过（元数据级），不代表解码期实测通过，故文案明确写清，避免用户把模板校验当成生成保证（L-31）。
+ * informational=true（老精选手动探针）：内嵌探针不过不等于不能用——老精选走内置模板，
+ * 故 NO_TEMPLATE/UNSUPPORTED 只提示、不标“不可用”；LOAD_FAILED 是真加载失败，仍按原样标。 */
 @Composable
-private fun ProbeVerdict(probe: TemplateProbeState?) {
+private fun ProbeVerdict(probe: TemplateProbeState?, informational: Boolean = false) {
     when (probe) {
         TemplateProbeState.OK -> Text(
             text = "模板校验通过（模板可用，未实测生成）",
@@ -469,22 +475,34 @@ private fun ProbeVerdict(probe: TemplateProbeState?) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         TemplateProbeState.NO_TEMPLATE -> Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                MiniTag("不可用", MaterialTheme.colorScheme.error)
+            if (!informational) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    MiniTag("不可用", MaterialTheme.colorScheme.error)
+                }
             }
             Text(
-                text = "无对话模板：该文件不含内嵌对话模板，无法用于对话生成。文件已保留，可手动删除。",
+                text = if (informational) {
+                    "无内嵌对话模板：本模型使用内置模板，仍可选用。"
+                } else {
+                    "无对话模板：该文件不含内嵌对话模板，无法用于对话生成。文件已保留，可手动删除。"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface,
             )
         }
         TemplateProbeState.UNSUPPORTED -> Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                MiniTag("不可用", MaterialTheme.colorScheme.error)
+            if (!informational) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    MiniTag("不可用", MaterialTheme.colorScheme.error)
+                }
             }
             Text(
-                text = "模板不受支持：该模型的对话模板不受当前运行时支持——" +
-                    "不是文件损坏，也不是你的操作问题。文件已保留，可手动删除。",
+                text = if (informational) {
+                    "内嵌模板不受支持：本模型使用内置模板，仍可选用。"
+                } else {
+                    "模板不受支持：该模型的对话模板不受当前运行时支持——" +
+                        "不是文件损坏，也不是你的操作问题。文件已保留，可手动删除。"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface,
             )

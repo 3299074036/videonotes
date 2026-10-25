@@ -783,7 +783,7 @@ private fun AsrModelRow(
             ) {
                 if (manageMode) {
                     // 换行修复方案一：裸文字（与正常态下载/删除同款），不用 TextButton
-                    // 的内边距，108dp 槽绰绰有余；强制单行兜底，字体放大也不折行。
+                    // 的内边距，80dp 槽（68dp 内容 + 12dp 余量）刚好；强制单行兜底，字体放大也不折行。
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(
                             text = "编辑",
