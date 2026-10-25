@@ -30,6 +30,8 @@ import javax.inject.Inject
 /** 知识库条目：一条视频及其笔记/任务状态的聚合。 */
 data class KnowledgeEntry(
     val storageKey: String,
+    /** 库里存的原始链接（新解析的含小红书 xsec_token；无笔记时进详情靠它重解析）。 */
+    val url: String,
     val title: String,
     val platform: Platform?,
     val durationSec: Long,
@@ -107,6 +109,7 @@ class KnowledgeBaseViewModel @Inject constructor(
                     val n = noteByKey[key]
                     KnowledgeEntry(
                         storageKey = key,
+                        url = v.url,
                         title = v.title,
                         platform = v.platformEnum(),
                         durationSec = v.durationSec,

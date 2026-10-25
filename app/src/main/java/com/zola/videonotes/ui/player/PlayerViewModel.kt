@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.zola.videonotes.data.auth.XhsAuthStore
 import com.zola.videonotes.data.download.VideoDownloader
+import com.zola.videonotes.data.local.VideoDao
 import com.zola.videonotes.data.parser.ParserRegistry
 import com.zola.videonotes.data.player.PlayableStream
 import com.zola.videonotes.data.player.VideoStreamFetcher
@@ -53,7 +54,8 @@ sealed interface PlayerDownloadUiState {
  * 1. 详情页带过来的 mediaUrl（小红书）：直接播，不重解析。请求头不走导航（Cookie 不进
  *    路由参数），播放时按 [XhsAuthStore] 现取桌面 UA + Referer + web_session。
  * 2. 详情页带过来的 sourceUrl（含小红书 xsec_token）：重解析一次取新鲜直链。
- * 3. 兜底：按 storageKey 重建的地址重解析（抖音可用；小红书无 token 会撞登录墙）。
+ * 3. 库里存的原始链接（同 2，新解析的含 token；笔记页点播放走这条）。
+ * 4. 兜底：按 storageKey 重建的地址重解析（抖音可用；小红书无 token 会撞登录墙）。
  * YouTube 的 sourceUrl 按标准 watch 链接重建，B站直接用 videoId。
  */
 @HiltViewModel
@@ -62,6 +64,7 @@ class PlayerViewModel @Inject constructor(
     private val parserRegistry: ParserRegistry,
     private val videoDownloader: VideoDownloader,
     private val xhsAuthStore: XhsAuthStore,
+    private val videoDao: VideoDao,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -85,10 +88,13 @@ class PlayerViewModel @Inject constructor(
 
     /** 下载当前视频（无水印）到系统下载目录。下载中重复点击直接忽略。 */
     fun downloadVideo() {
-        val video = buildVideoInfo(storageKey) ?: return
         if (_downloadState.value is PlayerDownloadUiState.Working) return
         _downloadState.value = PlayerDownloadUiState.Working(0f)
         viewModelScope.launch {
+            val video = buildVideoInfo(storageKey) ?: run {
+                _downloadState.value = PlayerDownloadUiState.Failed("视频信息无效")
+                return@launch
+            }
             // VideoDownloader 内部处理直链缺失：抖音/小红书重解析，B站/YouTube 取流
             videoDownloader.download(video) { p ->
                 _downloadState.value = PlayerDownloadUiState.Working(p)
@@ -130,11 +136,10 @@ class PlayerViewModel @Inject constructor(
                 )
                 return@launch
             }
-            // 抖音/小红书：播放前重新解析取新鲜直链；优先用详情页带过来的原始链接
-            // （含 xsec_token），其次才用 storageKey 重建的地址。
+            // 抖音/小红书：播放前重新解析取新鲜直链。buildVideoInfo 已算好有效 sourceUrl
+            // （导航参数 → 库里原链接 → storageKey 反推地址），直接用它解析。
             val playableVideo = if (video.platform == Platform.DOUYIN || video.platform == Platform.XIAOHONGSHU) {
-                val parseUrl = sourceUrlArg.ifBlank { video.sourceUrl }
-                parserRegistry.parse(parseUrl).getOrNull() ?: run {
+                parserRegistry.parse(video.sourceUrl).getOrNull() ?: run {
                     _uiState.value = PlayerUiState.Failed("该视频暂不支持站内播放，请重新解析")
                     return@launch
                 }
@@ -157,15 +162,19 @@ class PlayerViewModel @Inject constructor(
         xhsAuthStore.webSession()?.let { put("Cookie", "web_session=$it") }
     }
 
-    private fun buildVideoInfo(storageKey: String): VideoInfo? {
+    private suspend fun buildVideoInfo(storageKey: String): VideoInfo? {
         val platform = DeepLinkBuilder.platformOf(storageKey) ?: return null
         val videoId = DeepLinkBuilder.videoIdOf(storageKey).takeIf { it.isNotBlank() } ?: return null
-        val sourceUrl = when (platform) {
+        val reconstructed = when (platform) {
             Platform.YOUTUBE -> "https://www.youtube.com/watch?v=$videoId"
             Platform.DOUYIN -> "https://www.douyin.com/video/$videoId"
             Platform.XIAOHONGSHU -> "https://www.xiaohongshu.com/explore/$videoId"
             else -> ""
         }
+        // 有效 sourceUrl 优先级：详情页带过来的原始链接 → 库里存的原始链接
+        // （新解析的含小红书 xsec_token）→ 按 storageKey 反推的地址（小红书无 token 会撞墙）。
+        val storedUrl = runCatching { videoDao.getByStorageKey(storageKey)?.url.orEmpty() }.getOrElse { "" }
+        val sourceUrl = sourceUrlArg.ifBlank { storedUrl }.ifBlank { reconstructed }
         return VideoInfo(
             platform = platform,
             videoId = videoId,
@@ -173,8 +182,7 @@ class PlayerViewModel @Inject constructor(
             coverUrl = "",
             durationSec = 0,
             author = "",
-            // 详情页带过来的原始链接优先（小红书含 xsec_token），下载与重解析都用它。
-            sourceUrl = sourceUrlArg.ifBlank { sourceUrl },
+            sourceUrl = sourceUrl,
             mediaUrl = mediaUrlArg,
             mediaHeaders = if (platform == Platform.XIAOHONGSHU) xhsMediaHeaders() else emptyMap(),
         )

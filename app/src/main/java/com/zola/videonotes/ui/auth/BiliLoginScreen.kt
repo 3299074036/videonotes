@@ -40,9 +40,6 @@ private const val LOGIN_URL = "https://passport.bilibili.com/login"
 private const val COOKIE_URL = "https://www.bilibili.com"
 
 /** 移动端 Chrome UA：B站登录页对桌面 UA 展示不一致，统一用移动端。 */
-private const val MOBILE_CHROME_UA =
-    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) " +
-        "Chrome/126.0.0.0 Mobile Safari/537.36"
 
 /**
  * B站登录页：内嵌 B站官方登录页，账号密码只在 B站页面输入。
@@ -126,15 +123,11 @@ private fun WebView.initBiliLoginWebView(
     settings.databaseEnabled = true
     settings.mediaPlaybackRequiresUserGesture = false
     settings.cacheMode = WebSettings.LOAD_DEFAULT
-    // textZoom=100 让页内字体不受系统字体缩放影响；加载完派发 resize 让 SPA 重算一次布局。
+    // textZoom=100 即 Android 默认值，保留仅作显式声明（JKVideo 的 RN WebView 同为默认设置）。
     settings.textZoom = 100
-    // B站登录页是按移动端视口排版的 H5，不开这两个会导致元素错位重叠
-    settings.useWideViewPort = true
-    settings.loadWithOverviewMode = true
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
         settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
     }
-    settings.userAgentString = MOBILE_CHROME_UA
     // 部分页面依赖 WebChromeClient 处理 JS 对话框/console，不设置会导致静默失败
     webChromeClient = WebChromeClient()
     webViewClient = object : WebViewClient() {
@@ -144,8 +137,6 @@ private fun WebView.initBiliLoginWebView(
 
         override fun onPageFinished(view: WebView?, url: String?) {
             onPageLoadingChanged(false)
-            // 让单页应用按最终视口重算一次布局（协议区与登录按钮错位多因此而来）
-            view?.evaluateJavascript("window.dispatchEvent(new Event('resize'));", null)
             // 每次页面加载完检查登录态：B站登录成功后会写入 SESSDATA
             val cookies = CookieManager.getInstance().getCookie(COOKIE_URL)
             onCookiesChanged(cookies)

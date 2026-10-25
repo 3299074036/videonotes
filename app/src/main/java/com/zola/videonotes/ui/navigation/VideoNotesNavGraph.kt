@@ -41,14 +41,14 @@ fun VideoNotesNavGraph(
     ) {
         composable(Routes.HOME) {
             MainScreen(
-                onEntryClick = { storageKey, noteId ->
-                    // 有笔记直接进笔记详情，否则按 storageKey 反推 URL 进元信息页
+                onEntryClick = { storageKey, noteId, url ->
+                    // 有笔记直接进笔记详情，否则用库里存的原始链接进元信息页
+                    // （小红书原链接含 xsec_token；只有库里没有时才退回按 storageKey 反推的地址）。
                     if (noteId != null) {
                         navController.navigate(Routes.noteDetail(noteId))
                     } else {
-                        storageKeyToUrl(storageKey)?.let { url ->
-                            navController.navigate(Routes.metadata(url))
-                        }
+                        val target = url.ifBlank { storageKeyToUrl(storageKey) }
+                        target?.let { navController.navigate(Routes.metadata(it)) }
                     }
                 },
                 onAddVideoClick = { navController.navigate(Routes.IMPORT) },
@@ -110,7 +110,7 @@ fun VideoNotesNavGraph(
         ) { backStackEntry ->
             // 设置页路由（兼容旧入口）：经底部导航框架打开，可指定初始 Tab
             MainScreen(
-                onEntryClick = { _, _ -> },
+                onEntryClick = { _, _, _ -> },
                 onAddVideoClick = {},
                 onNavigateToModels = { section ->
                     navController.navigate(Routes.modelManagement(section))

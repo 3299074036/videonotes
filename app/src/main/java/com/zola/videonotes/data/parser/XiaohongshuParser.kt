@@ -46,7 +46,14 @@ class XiaohongshuParser @Inject constructor(
     override suspend fun parse(url: String): Result<VideoInfo> {
         return try {
             val cleanUrl = extractFirstUrl(url) ?: url.trim()
-            val finalUrl = redirects.resolve(cleanUrl)
+            // 已是完整笔记地址（知识库/笔记跳转带过来的库链接）就不再走跳转：
+            // 跳转请求不带登录 Cookie，小红书可能把它重定向到登录/风控页，反而丢了
+            // 地址里的 noteId 和 xsec_token。短链（不含笔记地址）才需要跳转展开。
+            val finalUrl = if (noteIdPattern.containsMatchIn(cleanUrl)) {
+                cleanUrl
+            } else {
+                redirects.resolve(cleanUrl)
+            }
             val noteId = noteIdPattern.find(finalUrl)?.groupValues?.get(1)
                 ?: throw IOException("未能从小红书链接中识别笔记 ID：请使用 App 内「分享 → 复制链接」得到的完整链接（含 xsec_token）")
             // 原分享链接的查询串（含 xsec_token）：重建两条路径的地址时都带上
@@ -135,7 +142,9 @@ class XiaohongshuParser @Inject constructor(
                 }
                 val finalUrl = response.request.url.toString()
                 if (LOGIN_WALL_MARKERS.any { finalUrl.contains(it) }) {
-                    throw XhsLoginRequiredException()
+                    // 已登录（请求带了 Cookie）还撞墙，说明链接缺有效的 xsec_token，
+                    // 不是没登录——报错要指对方向（重新粘贴原链接），别误导用户去登录。
+                    throw XhsLoginRequiredException(tokenMissing = headers["Cookie"]?.isNotBlank() == true)
                 }
                 response.body?.string().orEmpty()
             }
@@ -288,7 +297,13 @@ class XiaohongshuParser @Inject constructor(
     }
 
     /** 被登录墙拦下：调用方不再重试另一条路径，直接报可操作的提示。 */
-    class XhsLoginRequiredException : IOException("小红书要求登录后才能查看笔记内容，请先到设置 → 小红书账号登录")
+    class XhsLoginRequiredException(tokenMissing: Boolean = false) : IOException(
+        if (tokenMissing) {
+            "该小红书链接已失效（缺少 xsec_token），请重新粘贴小红书原链接解析"
+        } else {
+            "小红书要求登录后才能查看笔记内容，请先到设置 → 小红书账号登录"
+        },
+    )
 
     companion object {
         private const val XHS_HOME = "https://www.xiaohongshu.com"
