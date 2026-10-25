@@ -756,9 +756,7 @@ private fun AsrModelRow(
             // 每行 ⓘ：副行余项（体积 · 时间戳说明）与描述收进弹窗。
             TermInfoIcon(onClick = { showDetail = true })
             // 管理态：右侧动作位切换为编辑/移除；正常态保持下载/删除两态。
-            // 下载恢复 153ac3d 的裸 Text（bodyMedium）：与删除同槽，槽内左对齐，
-            // 使 ⓘ—下载间隙与推荐—ⓘ 间隙一致（12dp）；右对齐会把间隙撑到 36dp。
-            // 与删除文字右边缘差 12dp 是裸 Text 与 TextButton 内边距差所致，属固有差值。
+            // 下载、删除均为 153ac3d 的裸 Text（bodyMedium），同槽左对齐，三段间隙一致（12dp）。
             Box(
                 modifier = Modifier.width(
                     if (manageMode) ModelRowManageActionSlotWidth else ModelRowActionSlotWidth,
@@ -776,7 +774,13 @@ private fun AsrModelRow(
                     // 右侧动作位严格只有两态：未下载「下载」、已下载「删除」。
                     // 下载中/已暂停/失败时右侧留空，状态与操作留在下方次级区。
                     when {
-                        completed -> TextButton(onClick = onDelete) { Text("删除") }
+                        completed -> Text(
+                            text = "删除",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.align(Alignment.CenterStart)
+                                .clickable { onDelete() },
+                        )
                         state.status == ModelDownloadManager.DlStatus.NOT_DOWNLOADED ->
                             Text(
                                 text = "下载",

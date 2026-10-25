@@ -275,7 +275,7 @@ private fun CatalogEntryRow(
             // 每行 ⓘ：副行余项（来源档位 · 量化 · 体积 · 内存需求）与描述收进弹窗。
             TermInfoIcon(onClick = { showDetail = true })
             // 管理态：右侧动作位切换为编辑/移除；正常态保持下载/删除两态。
-            // 下载恢复 153ac3d 的裸 Text（bodyMedium），与删除同槽左对齐，间隙与推荐—ⓘ 一致；
+            // 下载、删除均为 153ac3d 的裸 Text（bodyMedium），同槽左对齐，三段间隙一致；
             // 内存不足的下载恢复原来不可点的灰字（bodyMedium，onSurfaceVariant）。
             Box(
                 modifier = Modifier.width(
@@ -294,7 +294,13 @@ private fun CatalogEntryRow(
                     // 右侧动作位严格只有两态：未下载「下载」、已下载「删除」。
                     // 下载中/已暂停/失败时右侧留空，状态与操作留在下方次级区。
                     when {
-                        completed -> TextButton(onClick = { vm.delete(entry.id) }) { Text("删除") }
+                        completed -> Text(
+                            text = "删除",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.align(Alignment.CenterStart)
+                                .clickable { vm.delete(entry.id) },
+                        )
                         state.status == LocalModelDownloadManager.DlStatus.NOT_DOWNLOADED && !ramBlocked ->
                             Text(
                                 text = "下载",
