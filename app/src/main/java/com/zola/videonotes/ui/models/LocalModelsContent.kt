@@ -11,12 +11,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,9 +46,11 @@ import com.zola.videonotes.ui.theme.VideoNotesTokens
  * 本地模型页内容（国内名单定版，2026-10-24 §17 改判；2026-10-24 合并包新人友好；
  * 2026-10-24 第二轮修订：排序功能下架、实测功能下架、C7 下架）：
  * 当前生效条（恒显，单行本页模型）→ 用途筛选 →
- * 占用汇总 → 已下载组 → 置顶推荐 → 更多模型（折叠）。
+ * 占用汇总 → 单列（无分组，按推荐→已下载→目录序排）。
  * 搜索框已下架（注记）；HF 动态层已下线，本页不再有联网加载区；
  * 已下载的存量动态条目仍以普通行呈现（可选用/删除）。行形态为纸面发丝线行，无圆角卡片。
+ * 行只显示名称（单行，超长截断）；副行与描述收进每行 ⓘ 弹窗（标题为英文原名，
+ * 无英文原名回落显示中文名），原第三方量化解释弹窗已删。
  *
  * 选择机制（合并包，推翻 §20 先下后选）：行首单选框是唯一的选择表达（单页单选），
  * 未下载行也可勾选（选后不自动下载，探针门顺延至下载完成时）；
@@ -61,6 +66,11 @@ fun LocalModelsContent(
     llmCurrentUndownloaded: Boolean = false,
     asrCurrentName: String? = null,
     asrCurrentUndownloaded: Boolean = false,
+    /** 管理态：行右侧动作位切换为编辑/移除（下载/删除文件回正常态）。 */
+    manageMode: Boolean = false,
+    onEditEntry: (CatalogEntry) -> Unit = {},
+    onRemoveEntry: (CatalogEntry) -> Unit = {},
+    onAddClick: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val browse by vm.browseList.collectAsStateWithLifecycle()
@@ -68,8 +78,18 @@ fun LocalModelsContent(
     val selectedId by vm.selectedId.collectAsStateWithLifecycle()
     val useCaseFilter by vm.useCaseFilter.collectAsStateWithLifecycle()
     val pendingMobile by vm.pendingMobileConfirm.collectAsStateWithLifecycle()
-    var moreExpanded by remember { mutableStateOf(false) }
     var showTermDialog by remember { mutableStateOf(false) }
+
+    // 保存/恢复后定位：单列已无分组，直接滚动到该行，消费后清空。
+    val highlightId by vm.highlightId.collectAsStateWithLifecycle()
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    LaunchedEffect(highlightId, browse) {
+        val target = highlightId ?: return@LaunchedEffect
+        if (target in browse.ordered.map { it.id }) {
+            bringIntoViewRequester.bringIntoView()
+            vm.consumeHighlight()
+        }
+    }
 
     // 一次性提示（探针拦截原因、删除回落说明）以 Toast 呈现
     LaunchedEffect(Unit) {
@@ -103,40 +123,50 @@ fun LocalModelsContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(vertical = VideoNotesTokens.Space8),
         )
-        if (browse.downloaded.isNotEmpty()) {
-            SectionTitle(title = "已下载", hint = "本机已有")
-            browse.downloaded.forEach { entry ->
-                CatalogEntryRow(vm, entry, dlStates, selectedId, cloudDisabled)
-            }
+        // 单列（无分组）：按推荐→已下载→目录序排好。
+        browse.ordered.forEach { entry ->
+            CatalogEntryRow(
+                vm, entry, dlStates, selectedId, cloudDisabled,
+                manageMode = manageMode,
+                onEdit = { onEditEntry(entry) },
+                onRemove = { onRemoveEntry(entry) },
+                rowModifier = if (entry.id == highlightId) {
+                    Modifier.bringIntoViewRequester(bringIntoViewRequester)
+                } else {
+                    Modifier
+                },
+            )
         }
-        if (browse.featured.isNotEmpty()) {
-            SectionTitle(title = "推荐", hint = "")
-            browse.featured.forEach { entry ->
-                CatalogEntryRow(vm, entry, dlStates, selectedId, cloudDisabled)
-            }
-        }
-        if (browse.rest.isNotEmpty()) {
-            SectionTitle(title = "更多模型", hint = "按需再挑")
-            val shown = if (moreExpanded) browse.rest else emptyList()
-            shown.forEach { entry ->
-                CatalogEntryRow(vm, entry, dlStates, selectedId, cloudDisabled)
-            }
-            TextButton(
-                onClick = { moreExpanded = !moreExpanded },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
+        if (browse.ordered.isEmpty()) {
+            if (useCaseFilter == null) {
+                // 空态：列表里一个模型都没有（全被移除了），去添加走新增流。
                 Text(
-                    if (moreExpanded) "收起 ↑" else "展开其余 ${browse.rest.size} 个模型 ↓",
+                    text = "还没有模型",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(vertical = VideoNotesTokens.Space8),
+                )
+                Text(
+                    text = "从推荐池添加精选模型，或自己填写一个新模型。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
+                Button(onClick = onAddClick) { Text("去添加") }
+            } else {
+                Text(
+                    text = "没有符合该用途的模型",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = VideoNotesTokens.Space8),
                 )
             }
-        }
-        if (browse.downloaded.isEmpty() && browse.featured.isEmpty() && browse.rest.isEmpty()) {
-            Text(
-                text = "没有符合该用途的模型",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = VideoNotesTokens.Space8),
-            )
+        } else {
+            OutlinedButton(
+                onClick = onAddClick,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("＋ 新增模型")
+            }
         }
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
         TextButton(onClick = { showTermDialog = true }) {
@@ -178,6 +208,10 @@ private fun CatalogEntryRow(
     dlStates: Map<String, LocalModelDownloadManager.ModelDlState>,
     selectedId: String?,
     cloudDisabled: Boolean = false,
+    manageMode: Boolean = false,
+    onEdit: () -> Unit = {},
+    onRemove: () -> Unit = {},
+    rowModifier: Modifier = Modifier,
 ) {
     val state = dlStates[entry.id] ?: LocalModelDownloadManager.ModelDlState(
         modelId = entry.id,
@@ -189,15 +223,17 @@ private fun CatalogEntryRow(
     val selected = selectedId == entry.id
     val probe = vm.probeStateOf(entry)
     val ramBlocked = !completed && vm.isRamBlocked(entry)
-    var showOriginNote by remember { mutableStateOf(false) }
+    var showDetail by remember { mutableStateOf(false) }
 
-    if (showOriginNote) {
-        TermInfoDialog(title = "第三方量化", body = TermNotes.THIRD_PARTY) {
-            showOriginNote = false
+    if (showDetail) {
+        // ⓘ 弹窗标题用英文原名（无英文原名回落显示中文名）。
+        val detailTitle = entry.originalName?.takeIf { it.isNotBlank() } ?: entry.displayName
+        TermInfoDialog(title = detailTitle, body = entryDetailText(entry)) {
+            showDetail = false
         }
     }
 
-    Column(modifier = Modifier.fillMaxWidth()) {
+    Column(modifier = rowModifier.fillMaxWidth()) {
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -207,10 +243,10 @@ private fun CatalogEntryRow(
                 onClick = { vm.requestSelect(entry.id) },
                 enabled = !cloudDisabled,
             )
-            Text(
+            // 名称独占剩余宽＋字号自适应：单行完整显示，不打省略号；右侧由此贴右。
+            AutoFitName(
                 text = entry.displayName,
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f, fill = false),
+                modifier = Modifier.weight(1f),
             )
             // 标签只保留「推荐」与绿色「已下载 ✓」（第二轮修订：实测徽标全部下架）
             if (entry.source == CatalogSource.CURATED && entry.recommended) {
@@ -225,44 +261,34 @@ private fun CatalogEntryRow(
                     color = ColorDownloaded,
                 )
             }
-            Spacer(modifier = Modifier.weight(1f))
-            // 右侧动作位严格只有两态：未下载「下载」、已下载「删除」。
-            // 下载中/已暂停/失败时右侧留空，状态与操作留在下方次级区。
-            when {
-                completed -> TextButton(onClick = { vm.delete(entry.id) }) { Text("删除") }
-                state.status == LocalModelDownloadManager.DlStatus.NOT_DOWNLOADED && !ramBlocked ->
-                    Text(
-                        text = "下载",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.clickable { vm.download(entry.id) },
-                    )
-                state.status == LocalModelDownloadManager.DlStatus.NOT_DOWNLOADED && ramBlocked ->
-                    Text(
-                        text = "下载",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+            // 每行 ⓘ：副行余项（来源档位 · 量化 · 体积 · 内存需求）与描述收进弹窗。
+            TermInfoIcon(onClick = { showDetail = true })
+            // 管理态：右侧动作位切换为编辑/移除；正常态保持下载/删除两态。
+            if (manageMode) {
+                TextButton(onClick = onEdit) { Text("编辑") }
+                TextButton(onClick = onRemove) {
+                    Text("移除", color = MaterialTheme.colorScheme.error)
+                }
+            } else {
+                // 右侧动作位严格只有两态：未下载「下载」、已下载「删除」。
+                // 下载中/已暂停/失败时右侧留空，状态与操作留在下方次级区。
+                when {
+                    completed -> TextButton(onClick = { vm.delete(entry.id) }) { Text("删除") }
+                    state.status == LocalModelDownloadManager.DlStatus.NOT_DOWNLOADED && !ramBlocked ->
+                        Text(
+                            text = "下载",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable { vm.download(entry.id) },
+                        )
+                    state.status == LocalModelDownloadManager.DlStatus.NOT_DOWNLOADED && ramBlocked ->
+                        Text(
+                            text = "下载",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                }
             }
-        }
-        // 副行：英文原名 · 来源档位 · 量化 · 体积 · 内存需求；影子条目沿用旧口径
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = entryMetaLine(entry),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f, fill = false),
-            )
-            if (entry.origin == "third-party") {
-                TermInfoIcon(onClick = { showOriginNote = true })
-            }
-        }
-        if (entry.source == CatalogSource.CURATED && entry.description.isNotBlank()) {
-            Text(
-                text = entry.description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
         // 探针结论（四态）：动态条目与设探针门的新精选条目
         if (completed && (entry.source == CatalogSource.DYNAMIC || entry.requiresProbe)) {
@@ -287,7 +313,10 @@ private fun CatalogEntryRow(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    TextButton(onClick = { vm.pause(entry.id) }) { Text("暂停") }
+                    // 管理态只管条目，不管下载：暂停回正常态操作。
+                    if (!manageMode) {
+                        TextButton(onClick = { vm.pause(entry.id) }) { Text("暂停") }
+                    }
                 }
             }
             LocalModelDownloadManager.DlStatus.PAUSED -> {
@@ -297,9 +326,11 @@ private fun CatalogEntryRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Row {
-                    TextButton(onClick = { vm.download(entry.id) }) { Text("继续") }
-                    TextButton(onClick = { vm.delete(entry.id) }) { Text("删除") }
+                if (!manageMode) {
+                    Row {
+                        TextButton(onClick = { vm.download(entry.id) }) { Text("继续") }
+                        TextButton(onClick = { vm.delete(entry.id) }) { Text("删除") }
+                    }
                 }
             }
             LocalModelDownloadManager.DlStatus.FAILED -> {
@@ -309,9 +340,11 @@ private fun CatalogEntryRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
-                Row {
-                    TextButton(onClick = { vm.download(entry.id) }) { Text("重试") }
-                    TextButton(onClick = { vm.delete(entry.id) }) { Text("删除") }
+                if (!manageMode) {
+                    Row {
+                        TextButton(onClick = { vm.download(entry.id) }) { Text("重试") }
+                        TextButton(onClick = { vm.delete(entry.id) }) { Text("删除") }
+                    }
                 }
             }
             LocalModelDownloadManager.DlStatus.COMPLETED -> {
@@ -435,28 +468,8 @@ fun CurrentEffectBar(
     }
 }
 
-@Composable
-private fun SectionTitle(title: String, hint: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = VideoNotesTokens.Space12, bottom = VideoNotesTokens.Space4),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(text = title, style = MaterialTheme.typography.titleMedium)
-        if (hint.isNotBlank()) {
-            Spacer(modifier = Modifier.weight(1f))
-            Text(
-                text = hint,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-/** 条目副行：英文原名 · 来源档位 · 量化 · 体积 · 内存需求；影子条目沿用旧口径。 */
-private fun entryMetaLine(entry: CatalogEntry): String {
+/** 条目副行各段：英文原名 · 来源档位 · 量化 · 体积 · 内存需求；影子条目沿用旧口径。 */
+private fun entryMetaParts(entry: CatalogEntry): List<String> {
     val parts = mutableListOf<String>()
     when (entry.source) {
         CatalogSource.CURATED -> {
@@ -481,5 +494,17 @@ private fun entryMetaLine(entry: CatalogEntry): String {
             parts += formatBytes(entry.totalBytes)
         }
     }
-    return parts.joinToString(" · ")
+    return parts
+}
+
+/** ⓘ 弹窗正文：副行余项（去掉已作标题的英文原名）＋描述（精选条目）。 */
+private fun entryDetailText(entry: CatalogEntry): String {
+    val meta = entryMetaParts(entry)
+        .filterNot { it == entry.originalName }
+        .joinToString(" · ")
+    return if (entry.source == CatalogSource.CURATED && entry.description.isNotBlank()) {
+        if (meta.isBlank()) entry.description else "$meta\n${entry.description}"
+    } else {
+        meta
+    }
 }

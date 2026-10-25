@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -29,6 +31,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -50,6 +53,10 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.zola.videonotes.data.asr.ModelDownloadManager
+import com.zola.videonotes.data.catalog.CatalogEntry
+import com.zola.videonotes.data.catalog.CatalogKind
+import com.zola.videonotes.data.catalog.CatalogStore
+import com.zola.videonotes.data.catalog.UserCatalog
 import com.zola.videonotes.data.llm.LlmEngineType
 import com.zola.videonotes.data.llm.LlmPresets
 import com.zola.videonotes.data.llm.local.LocalLlmModels
@@ -111,6 +118,24 @@ fun ModelManagementScreen(
     }
     var passwordVisible by remember { mutableStateOf(false) }
 
+    // 管理态（模型配置化）：整屏一级状态，两 Tab 共用；云端配置页不显示管理入口。
+    var manageMode by remember { mutableStateOf(false) }
+    val showManage = when (section) {
+        Routes.SECTION_LLM_CLOUD -> false
+        Routes.SECTION_ASR, Routes.SECTION_LLM_LOCAL -> true
+        else -> if (mainTab == 0) effectiveEngine == LlmEngineType.LOCAL else true
+    }
+    // 新增／编辑／移除／推荐池的覆盖层状态（两 Tab 共用，分支按条目类别走对应 ViewModel）。
+    var poolKind by remember { mutableStateOf<CatalogKind?>(null) }
+    var formState by remember { mutableStateOf<ModelFormState?>(null) }
+    var removeTarget by remember { mutableStateOf<CatalogEntry?>(null) }
+    // 表单标识唯一性：全局生效 id（两类别 + 自定义 − 已移除），编辑时不判重。
+    val userVersion by UserCatalog.version.collectAsStateWithLifecycle()
+    val existingIds = remember(userVersion) {
+        val state = UserCatalog.snapshot()
+        (CatalogStore.all().map { it.id } + state.custom.map { it.id } - state.removedIds).toSet()
+    }
+
     // 存储概览：已下载总量 + 模型个数（LLM + ASR）
     val llmDownloaded = localDlStates.values
         .filter { it.status == LocalModelDownloadManager.DlStatus.COMPLETED }
@@ -130,6 +155,13 @@ fun ModelManagementScreen(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "返回",
                         )
+                    }
+                },
+                actions = {
+                    if (showManage) {
+                        TextButton(onClick = { manageMode = !manageMode }) {
+                            Text(if (manageMode) "完成" else "管理")
+                        }
                     }
                 },
             )
@@ -197,6 +229,10 @@ fun ModelManagementScreen(
                     llmCurrentUndownloaded = llmCurrentUndownloaded,
                     asrCurrentName = asrCurrentName,
                     asrCurrentUndownloaded = asrCurrentUndownloaded,
+                    manageMode = manageMode,
+                    onEditEntry = { formState = ModelFormState.Edit(it) },
+                    onRemoveEntry = { removeTarget = it },
+                    onAddClick = { poolKind = CatalogKind.ASR },
                 )
                 // 直达：云端 API 配置表单
                 section == Routes.SECTION_LLM_CLOUD -> CloudConfigSection(
@@ -213,6 +249,10 @@ fun ModelManagementScreen(
                     llmCurrentUndownloaded = llmCurrentUndownloaded,
                     asrCurrentName = asrCurrentName,
                     asrCurrentUndownloaded = asrCurrentUndownloaded,
+                    manageMode = manageMode,
+                    onEditEntry = { formState = ModelFormState.Edit(it) },
+                    onRemoveEntry = { removeTarget = it },
+                    onAddClick = { poolKind = CatalogKind.LLM },
                 )
                 // 完整版：按主 Tab 呈现
                 mainTab == 0 -> LlmTabContent(
@@ -229,6 +269,10 @@ fun ModelManagementScreen(
                     asrCurrentName = asrCurrentName,
                     asrCurrentUndownloaded = asrCurrentUndownloaded,
                     cloudDisabled = cloudDisabled,
+                    manageMode = manageMode,
+                    onEditEntry = { formState = ModelFormState.Edit(it) },
+                    onRemoveEntry = { removeTarget = it },
+                    onAddClick = { poolKind = CatalogKind.LLM },
                 )
                 else -> AsrTabContent(
                     browseList = asrBrowse,
@@ -238,11 +282,75 @@ fun ModelManagementScreen(
                     llmCurrentUndownloaded = llmCurrentUndownloaded,
                     asrCurrentName = asrCurrentName,
                     asrCurrentUndownloaded = asrCurrentUndownloaded,
+                    manageMode = manageMode,
+                    onEditEntry = { formState = ModelFormState.Edit(it) },
+                    onRemoveEntry = { removeTarget = it },
+                    onAddClick = { poolKind = CatalogKind.ASR },
                 )
             }
 
             Spacer(modifier = Modifier.height(VideoNotesTokens.Space24))
         }
+    }
+
+    // 覆盖层：推荐池／表单／移除确认（两 Tab 共用，分支按条目类别）。
+    poolKind?.let { kind ->
+        ModelPoolSheet(
+            kind = kind,
+            onDismiss = { poolKind = null },
+            onAddPoolEntry = { id ->
+                if (kind == CatalogKind.LLM) {
+                    localVm.restorePoolEntry(id)
+                } else {
+                    asrViewModel.restorePoolEntry(id)
+                }
+                poolKind = null
+            },
+            onCustomFill = {
+                poolKind = null
+                formState = ModelFormState.Add(kind)
+            },
+        )
+    }
+    formState?.let { state ->
+        ModelFormScreen(
+            formState = state,
+            existingIds = existingIds,
+            onBack = { formState = null },
+            onSave = { entry ->
+                when (state) {
+                    is ModelFormState.Add -> {
+                        if (state.kind == CatalogKind.LLM) {
+                            localVm.addCustomEntry(entry)
+                        } else {
+                            asrViewModel.addCustomEntry(entry)
+                        }
+                    }
+                    is ModelFormState.Edit -> {
+                        if (state.entry.kind == CatalogKind.LLM) {
+                            localVm.saveEditedEntry(state.entry, entry)
+                        } else {
+                            asrViewModel.saveEditedEntry(state.entry, entry)
+                        }
+                    }
+                }
+                formState = null
+            },
+        )
+    }
+    removeTarget?.let { entry ->
+        ModelRemoveDialog(
+            entry = entry,
+            onDismiss = { removeTarget = null },
+            onConfirm = { deleteFiles ->
+                if (entry.kind == CatalogKind.LLM) {
+                    localVm.removeEntry(entry, deleteFiles)
+                } else {
+                    asrViewModel.removeEntry(entry, deleteFiles)
+                }
+                removeTarget = null
+            },
+        )
     }
 }
 
@@ -266,6 +374,10 @@ private fun LlmTabContent(
     asrCurrentName: String?,
     asrCurrentUndownloaded: Boolean,
     cloudDisabled: Boolean,
+    manageMode: Boolean = false,
+    onEditEntry: (CatalogEntry) -> Unit = {},
+    onRemoveEntry: (CatalogEntry) -> Unit = {},
+    onAddClick: () -> Unit = {},
 ) {
     Column {
         PaperSegmentedRow(
@@ -295,6 +407,10 @@ private fun LlmTabContent(
                 llmCurrentUndownloaded = llmCurrentUndownloaded,
                 asrCurrentName = asrCurrentName,
                 asrCurrentUndownloaded = asrCurrentUndownloaded,
+                manageMode = manageMode,
+                onEditEntry = onEditEntry,
+                onRemoveEntry = onRemoveEntry,
+                onAddClick = onAddClick,
             )
         } else {
             CloudConfigSection(
@@ -307,7 +423,7 @@ private fun LlmTabContent(
     }
 }
 
-/** 语音识别 Tab（合并包新人友好；第二轮修订：排序功能下架）：生效条恒显 → 用途筛选 → 已下载 → 推荐 → 更多模型。 */
+/** 语音识别 Tab（合并包新人友好；第二轮修订：排序功能下架）：生效条恒显 → 用途筛选 → 单列。 */
 @Composable
 private fun AsrTabContent(
     browseList: ModelManagementViewModel.AsrBrowseList,
@@ -317,12 +433,26 @@ private fun AsrTabContent(
     llmCurrentUndownloaded: Boolean,
     asrCurrentName: String?,
     asrCurrentUndownloaded: Boolean,
+    manageMode: Boolean = false,
+    onEditEntry: (CatalogEntry) -> Unit = {},
+    onRemoveEntry: (CatalogEntry) -> Unit = {},
+    onAddClick: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val useCaseFilter by viewModel.useCaseFilter.collectAsStateWithLifecycle()
     val pendingMobile by viewModel.pendingMobileConfirm.collectAsStateWithLifecycle()
-    var moreExpanded by remember { mutableStateOf(false) }
     var showTermDialog by remember { mutableStateOf(false) }
+
+    // 保存/恢复后定位：单列已无分组，直接滚动到该行，消费后清空。
+    val highlightId by viewModel.highlightId.collectAsStateWithLifecycle()
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    LaunchedEffect(highlightId, browseList) {
+        val target = highlightId ?: return@LaunchedEffect
+        if (target in browseList.ordered.map { it.model.id }) {
+            bringIntoViewRequester.bringIntoView()
+            viewModel.consumeHighlight()
+        }
+    }
 
     // 一次性提示（删除回落说明）以 Toast 呈现
     LaunchedEffect(Unit) {
@@ -357,59 +487,54 @@ private fun AsrTabContent(
             onSelect = { viewModel.setUseCaseFilter(it) },
         )
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
-        if (browseList.downloaded.isNotEmpty()) {
-            SectionTitleRow(title = "已下载", hint = "")
-            browseList.downloaded.forEach { item ->
-                AsrModelRow(
-                    item = item,
-                    onDownload = { viewModel.download(item.model.id) },
-                    onPause = { viewModel.pause(item.model.id) },
-                    onDelete = { viewModel.delete(item.model.id) },
-                    onSelect = { viewModel.select(item.model.id) },
+        // 单列（无分组）：按推荐→已下载→目录序排好。
+        browseList.ordered.forEach { item ->
+            AsrModelRow(
+                item = item,
+                onDownload = { viewModel.download(item.model.id) },
+                onPause = { viewModel.pause(item.model.id) },
+                onDelete = { viewModel.delete(item.model.id) },
+                onSelect = { viewModel.select(item.model.id) },
+                manageMode = manageMode,
+                onEdit = { onEditEntry(item.entry) },
+                onRemove = { onRemoveEntry(item.entry) },
+                rowModifier = if (item.model.id == highlightId) {
+                    Modifier.bringIntoViewRequester(bringIntoViewRequester)
+                } else {
+                    Modifier
+                },
+            )
+        }
+        if (browseList.ordered.isEmpty()) {
+            if (useCaseFilter == null) {
+                // 空态：列表里一个模型都没有（全被移除了），去添加走新增流。
+                Text(
+                    text = "还没有模型",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(vertical = VideoNotesTokens.Space8),
+                )
+                Text(
+                    text = "从推荐池添加精选模型，或自己填写一个新模型。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
+                Button(onClick = onAddClick) { Text("去添加") }
+            } else {
+                Text(
+                    text = "没有符合该用途的模型",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = VideoNotesTokens.Space8),
                 )
             }
-        }
-        if (browseList.featured.isNotEmpty()) {
-            SectionTitleRow(title = "推荐", hint = "")
-            browseList.featured.forEach { item ->
-                AsrModelRow(
-                    item = item,
-                    onDownload = { viewModel.download(item.model.id) },
-                    onPause = { viewModel.pause(item.model.id) },
-                    onDelete = { viewModel.delete(item.model.id) },
-                    onSelect = { viewModel.select(item.model.id) },
-                )
-            }
-        }
-        if (browseList.rest.isNotEmpty()) {
-            SectionTitleRow(title = "更多模型", hint = "按需再挑")
-            if (moreExpanded) {
-                browseList.rest.forEach { item ->
-                    AsrModelRow(
-                        item = item,
-                        onDownload = { viewModel.download(item.model.id) },
-                        onPause = { viewModel.pause(item.model.id) },
-                        onDelete = { viewModel.delete(item.model.id) },
-                        onSelect = { viewModel.select(item.model.id) },
-                    )
-                }
-            }
-            TextButton(
-                onClick = { moreExpanded = !moreExpanded },
+        } else {
+            OutlinedButton(
+                onClick = onAddClick,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(
-                    if (moreExpanded) "收起 ↑" else "展开其余 ${browseList.rest.size} 个模型 ↓",
-                )
+                Text("＋ 新增模型")
             }
-        }
-        if (browseList.downloaded.isEmpty() && browseList.featured.isEmpty() && browseList.rest.isEmpty()) {
-            Text(
-                text = "没有符合该用途的模型",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = VideoNotesTokens.Space8),
-            )
         }
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
         Text(
@@ -429,7 +554,7 @@ private fun AsrTabContent(
 
     // WP4：移动网络大文件下载的一次性确认
     pendingMobile.firstOrNull()?.let { id ->
-        val item = (browseList.downloaded + browseList.featured + browseList.rest)
+        val item = browseList.ordered
             .firstOrNull { it.model.id == id }
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { viewModel.dismissMobile(id) },
@@ -448,26 +573,6 @@ private fun AsrTabContent(
                 TextButton(onClick = { viewModel.dismissMobile(id) }) { Text("取消") }
             },
         )
-    }
-}
-
-@Composable
-private fun SectionTitleRow(title: String, hint: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = VideoNotesTokens.Space12, bottom = VideoNotesTokens.Space4),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(text = title, style = MaterialTheme.typography.titleMedium)
-        if (hint.isNotBlank()) {
-            Spacer(modifier = Modifier.weight(1f))
-            Text(
-                text = hint,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
     }
 }
 
@@ -570,7 +675,7 @@ private fun CloudConfigSection(
     }
 }
 
-/** 语音识别模型发丝线行（合并包新人友好：中文主名 + 英文副行 + 标签仅推荐/已下载；单选框未下载也可勾选）。 */
+/** 语音识别模型发丝线行（合并包新人友好：中文主名单行 + 标签仅推荐/已下载；单选框未下载也可勾选）。 */
 @Composable
 private fun AsrModelRow(
     item: ModelManagementViewModel.ModelItemUi,
@@ -578,11 +683,36 @@ private fun AsrModelRow(
     onPause: () -> Unit,
     onDelete: () -> Unit,
     onSelect: () -> Unit,
+    manageMode: Boolean = false,
+    onEdit: () -> Unit = {},
+    onRemove: () -> Unit = {},
+    rowModifier: Modifier = Modifier,
 ) {
     val state = item.state
     val completed = state.status == ModelDownloadManager.DlStatus.COMPLETED
-    val catalogEntry = com.zola.videonotes.data.catalog.CatalogStore.asrById(item.model.id)
-    Column(modifier = Modifier.fillMaxWidth()) {
+    val catalogEntry = item.entry
+    var showDetail by remember { mutableStateOf(false) }
+
+    if (showDetail) {
+        // ⓘ 弹窗正文：副行余项（体积 · 时间戳说明）＋描述；标题用英文原名
+        // （无英文原名回落显示中文名），行上已不再显示副行。
+        val detailParts = mutableListOf<String>()
+        detailParts += formatBytes(item.model.totalBytes)
+        asrTimestampNote(item.model.id)?.let { detailParts += it }
+        val detailMeta = detailParts.joinToString(" · ")
+        val detailBody = if (item.model.description.isNotBlank()) {
+            "$detailMeta\n${item.model.description}"
+        } else {
+            detailMeta
+        }
+        val detailTitle =
+            catalogEntry?.originalName?.takeIf { it.isNotBlank() } ?: item.model.displayName
+        TermInfoDialog(title = detailTitle, body = detailBody) {
+            showDetail = false
+        }
+    }
+
+    Column(modifier = rowModifier.fillMaxWidth()) {
         androidx.compose.material3.HorizontalDivider(
             color = MaterialTheme.colorScheme.outlineVariant,
         )
@@ -594,10 +724,10 @@ private fun AsrModelRow(
                 onClick = onSelect,
                 enabled = true,
             )
-            Text(
+            // 名称独占剩余宽＋字号自适应：单行完整显示，不打省略号；右侧由此贴右。
+            AutoFitName(
                 text = item.model.displayName,
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f, fill = false),
+                modifier = Modifier.weight(1f),
             )
             // 标签只保留「推荐」与绿色「已下载 ✓」（第二轮修订：实测徽标全部下架）
             if (catalogEntry?.recommended == true) {
@@ -612,34 +742,28 @@ private fun AsrModelRow(
                     color = ColorDownloaded,
                 )
             }
-            Spacer(modifier = Modifier.weight(1f))
-            // 右侧动作位严格只有两态：未下载「下载」、已下载「删除」。
-            // 下载中/已暂停/失败时右侧留空，状态与操作留在下方次级区。
-            when {
-                completed -> TextButton(onClick = onDelete) { Text("删除") }
-                state.status == ModelDownloadManager.DlStatus.NOT_DOWNLOADED -> Text(
-                    text = "下载",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.clickable { onDownload() },
-                )
+            // 每行 ⓘ：副行余项（体积 · 时间戳说明）与描述收进弹窗。
+            TermInfoIcon(onClick = { showDetail = true })
+            // 管理态：右侧动作位切换为编辑/移除；正常态保持下载/删除两态。
+            if (manageMode) {
+                TextButton(onClick = onEdit) { Text("编辑") }
+                TextButton(onClick = onRemove) {
+                    Text("移除", color = MaterialTheme.colorScheme.error)
+                }
+            } else {
+                // 右侧动作位严格只有两态：未下载「下载」、已下载「删除」。
+                // 下载中/已暂停/失败时右侧留空，状态与操作留在下方次级区。
+                when {
+                    completed -> TextButton(onClick = onDelete) { Text("删除") }
+                    state.status == ModelDownloadManager.DlStatus.NOT_DOWNLOADED -> Text(
+                        text = "下载",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable { onDownload() },
+                    )
+                }
             }
         }
-        // 副行：英文原名 · 体积 · 时间戳说明（仅有实证的两档）
-        val subParts = mutableListOf<String>()
-        catalogEntry?.originalName?.let { subParts += it }
-        subParts += formatBytes(item.model.totalBytes)
-        asrTimestampNote(item.model.id)?.let { subParts += it }
-        Text(
-            text = subParts.joinToString(" · "),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = item.model.description,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         when (state.status) {
             ModelDownloadManager.DlStatus.DOWNLOADING -> {
                 Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
@@ -658,7 +782,10 @@ private fun AsrModelRow(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    TextButton(onClick = onPause) { Text("暂停") }
+                    // 管理态只管条目，不管下载：暂停回正常态操作。
+                    if (!manageMode) {
+                        TextButton(onClick = onPause) { Text("暂停") }
+                    }
                 }
             }
             ModelDownloadManager.DlStatus.PAUSED -> {
@@ -668,9 +795,11 @@ private fun AsrModelRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Row {
-                    TextButton(onClick = onDownload) { Text("继续") }
-                    TextButton(onClick = onDelete) { Text("删除") }
+                if (!manageMode) {
+                    Row {
+                        TextButton(onClick = onDownload) { Text("继续") }
+                        TextButton(onClick = onDelete) { Text("删除") }
+                    }
                 }
             }
             ModelDownloadManager.DlStatus.FAILED -> {
@@ -680,9 +809,11 @@ private fun AsrModelRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
-                Row {
-                    TextButton(onClick = onDownload) { Text("重试") }
-                    TextButton(onClick = onDelete) { Text("删除") }
+                if (!manageMode) {
+                    Row {
+                        TextButton(onClick = onDownload) { Text("重试") }
+                        TextButton(onClick = onDelete) { Text("删除") }
+                    }
                 }
             }
             ModelDownloadManager.DlStatus.COMPLETED -> {

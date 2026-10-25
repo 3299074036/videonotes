@@ -3,6 +3,7 @@ package com.zola.videonotes.data.llm.local
 import android.content.Context
 import com.zola.videonotes.data.catalog.CatalogSource
 import com.zola.videonotes.data.catalog.DynamicModelRegistry
+import com.zola.videonotes.data.catalog.UserCatalog
 import com.zola.videonotes.data.download.MobileDownloadConsent
 import com.zola.videonotes.data.download.ModelFileDownloader
 import com.zola.videonotes.data.download.NetworkGate
@@ -77,6 +78,7 @@ class LocalModelDownloadManager @Inject constructor(
     private val jobs = HashMap<String, Job>()
 
     init {
+        UserCatalog.init(context)
         appScope.launch {
             migration.migrateIfNeeded()
             refreshAll()
@@ -176,6 +178,44 @@ class LocalModelDownloadManager @Inject constructor(
                 totalBytes = totalOf(modelId),
                 error = null,
             )
+        }
+    }
+
+    /** 列表移除时丢弃该 id 的下载态（文件是否保留由调用方在此外决定）。 */
+    fun forgetState(modelId: String) {
+        jobs.remove(modelId)?.cancel()
+        _states.value = _states.value - modelId
+    }
+
+    /**
+     * 按磁盘现状重算单个条目态（恢复添加后找回已保留的文件；进行中的下载不碰）。
+     * 逻辑与 [refreshAll] 的单条目分支一致（含探针补探）。
+     */
+    fun refreshModel(modelId: String) {
+        if (jobs[modelId]?.isActive == true) return
+        val model = prefs.resolveModel(modelId) ?: return
+        appScope.launch {
+            withContext(Dispatchers.IO) {
+                val file = prefs.fileFor(model)
+                var done = if (file.exists()) file.length() else 0L
+                var error: String? = null
+                val status = when {
+                    !file.exists() || file.length() != model.sizeBytes -> DlStatus.NOT_DOWNLOADED
+                    prefs.isModelReadyVerified(model) -> DlStatus.COMPLETED
+                    else -> {
+                        file.delete()
+                        done = 0L
+                        error = "模型文件校验失败（SHA-256 不匹配），已删除，请重新下载"
+                        DlStatus.NOT_DOWNLOADED
+                    }
+                }
+                updateState(model.id) { ModelDlState(model.id, status, done, model.sizeBytes, error) }
+                if (status == DlStatus.COMPLETED && model.requiresProbe &&
+                    prefs.curatedProbeState(model) == null
+                ) {
+                    runCatching { templateProbe.probeCurated(model, prefs.fileFor(model)) }
+                }
+            }
         }
     }
 

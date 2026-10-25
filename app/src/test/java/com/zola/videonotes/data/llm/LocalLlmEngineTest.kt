@@ -51,14 +51,15 @@ class LocalLlmEngineTest {
         assertTrue(LocalLlmEngine.MAX_OUTPUT_TOKENS > 0)
     }
 
-    /** 模型目录：两档模型 ID 唯一、URL 为 HF 直链、文件名以 .gguf 结尾。 */
+    /** 模型目录：两档模型 ID 唯一、URL 为 https 直链、文件名以 .gguf 结尾
+     *（2026-10-24 国内名单起部分条目走 ModelScope，不再断言 HF 前缀）。 */
     @Test
     fun `local model catalog is sane`() {
         val ids = LocalLlmModels.ALL.map { it.id }
         assertEquals(ids.size, ids.toSet().size)
         for (m in LocalLlmModels.ALL) {
             assertTrue(m.fileName.endsWith(".gguf"))
-            assertTrue(m.url.startsWith("https://huggingface.co/"))
+            assertTrue(m.url.startsWith("https://"))
             assertTrue(m.sizeBytes > 500_000_000L)
         }
         // 默认选中 4B

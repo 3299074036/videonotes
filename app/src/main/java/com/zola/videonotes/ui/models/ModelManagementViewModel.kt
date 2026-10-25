@@ -5,7 +5,12 @@ import androidx.lifecycle.viewModelScope
 import com.zola.videonotes.data.asr.AsrModelCatalog
 import com.zola.videonotes.data.asr.AsrPreferences
 import com.zola.videonotes.data.asr.ModelDownloadManager
+import com.zola.videonotes.data.catalog.CatalogEntry
 import com.zola.videonotes.data.catalog.CatalogStore
+import com.zola.videonotes.data.catalog.UserCatalog
+import com.zola.videonotes.data.catalog.filesChanged
+import com.zola.videonotes.data.catalog.mergeUserCatalog
+import com.zola.videonotes.data.catalog.toAsrModel
 import com.zola.videonotes.domain.asr.AsrModel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -29,13 +34,6 @@ class ModelManagementViewModel @Inject constructor(
     private val prefs: AsrPreferences,
 ) : ViewModel() {
 
-    companion object {
-        /** 置顶推荐 3 条（新人列表；已下载的自动落入已下载组，不重复出现）。 */
-        val FEATURED_IDS = listOf(
-            "zipformer-ctc-zh-int8", "sensevoice-int8", "whisper-small-int8",
-        )
-    }
-
     /** 等待「移动网络大文件下载」一次性确认的条目 id。 */
     val pendingMobileConfirm: StateFlow<Set<String>> = downloadManager.pendingMobileConfirm
 
@@ -51,28 +49,39 @@ class ModelManagementViewModel @Inject constructor(
 
     fun dismissMobile(modelId: String) = downloadManager.dismissMobileConfirm(modelId)
 
-    /** 单个模型的展示数据。 */
+    /** 单个模型的展示数据（entry 为生效条目：精选原值/改动覆盖/自定义，标签与副行取它）。 */
     data class ModelItemUi(
         val model: AsrModel,
+        val entry: CatalogEntry,
         val state: ModelDownloadManager.ModelDlState,
         val selected: Boolean,
     )
 
-    /** 浏览态：已下载组 + 置顶推荐组 + 更多模型组（均已按推荐序排好、用途筛选后）。 */
+    /** 浏览态：单列（无分组），已按推荐→已下载→目录序排好、用途筛选后。 */
     data class AsrBrowseList(
-        val downloaded: List<ModelItemUi> = emptyList(),
-        val featured: List<ModelItemUi> = emptyList(),
-        val rest: List<ModelItemUi> = emptyList(),
+        val ordered: List<ModelItemUi> = emptyList(),
     )
+
+    /** 保存后待定位的条目 id（列表展开并滚动到它一次，界面消费后清空）。 */
+    private val _highlightId = MutableStateFlow<String?>(null)
+    val highlightId: StateFlow<String?> = _highlightId.asStateFlow()
+
+    fun consumeHighlight() {
+        _highlightId.value = null
+    }
 
     val browseList: StateFlow<AsrBrowseList> = combine(
         downloadManager.states,
         prefs.selectedModelId,
         _useCaseFilter,
-    ) { states, selectedId, useCase ->
-        val all = AsrModelCatalog.models.map { model ->
+        UserCatalog.version,
+    ) { states, selectedId, useCase, _ ->
+        val effective = mergeUserCatalog(CatalogStore.asrCurated(), UserCatalog.snapshot())
+        val all = effective.map { entry ->
+            val model = entry.toAsrModel()
             ModelItemUi(
                 model = model,
+                entry = entry,
                 state = states[model.id] ?: ModelDownloadManager.ModelDlState(
                     modelId = model.id,
                     status = ModelDownloadManager.DlStatus.NOT_DOWNLOADED,
@@ -82,32 +91,28 @@ class ModelManagementViewModel @Inject constructor(
                 selected = model.id == selectedId,
             )
         }
+        // 单列：已下载（不过滤）＋未下载（用途筛选后），按推荐→已下载→目录序排。
         val downloaded = all.filter {
             it.state.status == ModelDownloadManager.DlStatus.COMPLETED
-        }.sortedWith(
-            compareByDescending<ModelItemUi> { it.selected }
-                .thenBy { it.model.displayName.lowercase() },
-        )
+        }
         var pending = all.filter {
             it.state.status != ModelDownloadManager.DlStatus.COMPLETED
         }
         if (useCase != null) {
-            pending = pending.filter {
-                CatalogStore.asrById(it.model.id)?.useCases?.contains(useCase) == true
-            }
+            pending = pending.filter { it.entry.useCases.contains(useCase) }
         }
-        // 排序功能已下架：固定按推荐序排列（推荐在前，同组内保持目录序）。
-        pending = pending.sortedByDescending {
-            CatalogStore.asrById(it.model.id)?.recommended == true
-        }
-        val featured = FEATURED_IDS.mapNotNull { id -> pending.firstOrNull { it.model.id == id } }
-        val rest = pending.filter { it.model.id !in FEATURED_IDS }
-        AsrBrowseList(downloaded = downloaded, featured = featured, rest = rest)
+        val catalogOrder = all.withIndex().associate { it.value.model.id to it.index }
+        val ordered = (downloaded + pending).sortedWith(
+            compareByDescending<ModelItemUi> { it.entry.recommended }
+                .thenByDescending { it.state.status == ModelDownloadManager.DlStatus.COMPLETED }
+                .thenBy { catalogOrder[it.model.id] ?: Int.MAX_VALUE },
+        )
+        AsrBrowseList(ordered = ordered)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AsrBrowseList())
 
     /** 旧 items 流（兼容：全量平铺，仅排序后；新界面改用 [browseList]）。 */
     val items: StateFlow<List<ModelItemUi>> = browseList
-        .map { it.downloaded + it.featured + it.rest }
+        .map { it.ordered }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /** 开始（或继续）下载。 */
@@ -128,27 +133,94 @@ class ModelManagementViewModel @Inject constructor(
                 .firstOrNull { it.id == modelId }?.displayName ?: modelId
             downloadManager.deleteModel(modelId)
             if (wasSelected) {
-                val downloadedIds = downloadManager.states.value.values
-                    .filter { it.status == ModelDownloadManager.DlStatus.COMPLETED }
-                    .map { it.modelId }
-                    .toSet()
-                val orderedIds = AsrModelCatalog.models.map { it.id }
-                val defaultId = AsrModelCatalog.DEFAULT_MODEL_ID
-                val fallbackId: String? = when {
-                    defaultId in downloadedIds -> defaultId
-                    else -> orderedIds.firstOrNull { it in downloadedIds }
-                }
-                if (fallbackId != null) {
-                    prefs.setSelectedModelId(fallbackId)
-                    val fallbackName = AsrModelCatalog.models
-                        .firstOrNull { it.id == fallbackId }?.displayName ?: fallbackId
-                    _userMessage.tryEmit("已删除 $deletedName，已回落到 $fallbackName")
-                } else {
-                    prefs.setSelectedModelId(null)
-                    _userMessage.tryEmit("已删除 $deletedName，暂无已下载模型")
-                }
+                fallbackAfterRemoval(deletedName)
             }
         }
+    }
+
+    /** 删除/移除已选模型后的回落（与 delete 共用）。 */
+    private suspend fun fallbackAfterRemoval(deletedName: String) {
+        val downloadedIds = downloadManager.states.value.values
+            .filter { it.status == ModelDownloadManager.DlStatus.COMPLETED }
+            .map { it.modelId }
+            .toSet()
+        val orderedIds = AsrModelCatalog.models.map { it.id }
+        val defaultId = AsrModelCatalog.DEFAULT_MODEL_ID
+        val fallbackId: String? = when {
+            defaultId in downloadedIds -> defaultId
+            else -> orderedIds.firstOrNull { it in downloadedIds }
+        }
+        if (fallbackId != null) {
+            prefs.setSelectedModelId(fallbackId)
+            val fallbackName = AsrModelCatalog.models
+                .firstOrNull { it.id == fallbackId }?.displayName ?: fallbackId
+            _userMessage.tryEmit("已删除 $deletedName，已回落到 $fallbackName")
+        } else {
+            prefs.setSelectedModelId(null)
+            _userMessage.tryEmit("已删除 $deletedName，暂无已下载模型")
+        }
+    }
+
+    // ---------- 增删改（模型配置化） ----------
+
+    /** 新增自定义条目（表单已校验）。 */
+    fun addCustomEntry(entry: CatalogEntry) {
+        UserCatalog.addCustom(entry)
+        _highlightId.value = entry.id
+    }
+
+    /**
+     * 修改条目：只改名称/描述/用途/内存不碰下载态；改了文件则清掉已下载。
+     * 自定义条目原地更新；精选池条目走改动覆盖（改后去推荐）。
+     */
+    fun saveEditedEntry(old: CatalogEntry, new: CatalogEntry) {
+        viewModelScope.launch {
+            // 表单不改的 curated 属性沿用旧值（来源档位、下载量）。
+            val preserved = new.copy(
+                smallModelPrompt = old.smallModelPrompt,
+                origin = old.origin,
+                downloadCount = old.downloadCount,
+            )
+            if (filesChanged(old, preserved)) {
+                downloadManager.deleteModel(old.id)
+                downloadManager.forgetState(old.id)
+            }
+            if (UserCatalog.isCustom(old.id)) {
+                UserCatalog.updateCustom(preserved)
+            } else {
+                UserCatalog.saveEditedPoolEntry(preserved)
+            }
+            _highlightId.value = preserved.id
+        }
+    }
+
+    /**
+     * 从列表移除条目：下载中的先取消；文件按勾选删或保留
+     * （保留时丢弃下载态，恢复添加后按磁盘重算，可找回）。
+     * 移除已选模型时与删除文件同口径回落。
+     */
+    fun removeEntry(entry: CatalogEntry, deleteFiles: Boolean) {
+        viewModelScope.launch {
+            val wasSelected = items.value.firstOrNull { it.selected }?.model?.id == entry.id
+            val removedName = entry.displayName
+            if (deleteFiles) {
+                downloadManager.deleteModel(entry.id)
+            } else {
+                downloadManager.pauseDownload(entry.id)
+                downloadManager.forgetState(entry.id)
+            }
+            UserCatalog.remove(entry.id)
+            if (wasSelected) {
+                fallbackAfterRemoval(removedName)
+            }
+        }
+    }
+
+    /** 从推荐池添加/恢复：清移除标记与改动覆盖，回到精选原值；已保留文件按磁盘重算态。 */
+    fun restorePoolEntry(id: String) {
+        UserCatalog.restore(id)
+        downloadManager.refreshUserModels()
+        _highlightId.value = id
     }
 
     /**

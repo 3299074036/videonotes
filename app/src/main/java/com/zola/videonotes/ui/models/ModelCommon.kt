@@ -23,8 +23,14 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.zola.videonotes.domain.asr.formatBytes
 import com.zola.videonotes.ui.theme.VideoNotesTokens
 
@@ -86,7 +92,6 @@ object TermNotes {
     const val Q4K = "4 位量化，比 8 位更小，语言模型常用。"
     const val CER = "字错率：官方中文测试集上的错字比例，越低越好。"
     const val CONTEXT = "上下文：一次能看的最长文稿，超了会分段。"
-    const val THIRD_PARTY = "非官方转换，文件哈希已锁定校验。"
     const val ALL = "int8：8 位整数量化，体积小、速度快，精度略降。\n" +
         "4 位量化（Q4_K）：比 8 位更小，语言模型常用。\n" +
         "字错率：官方中文测试集上的错字比例，越低越好。\n" +
@@ -143,6 +148,32 @@ fun UseCaseChips(
 }
 
 /** 行标题旁的徽标（第二轮修订：仅保留「推荐」一轴；实测徽标全部下架）。 */
+/**
+ * 行名单行自适应名：单行、永不截断省略号。名称独占 Row 剩余宽（调用处给 weight(1f)），
+ * 放不下时字号从标题档逐档缩小（下限 12sp），保证全名显示在同一行；右侧 ⓘ 与动作
+ * 因此始终贴右对齐。极端超长名触底仍放不下时直接裁切（不打省略号）。
+ */
+@Composable
+fun AutoFitName(text: String, modifier: Modifier = Modifier) {
+    // 标题档字号须在 remember 外读取（remember 的计算块不是 @Composable 上下文）。
+    val baseSize = MaterialTheme.typography.titleMedium.fontSize
+    var fontSize by remember(text) { mutableStateOf(baseSize) }
+    Text(
+        text = text,
+        style = MaterialTheme.typography.titleMedium,
+        fontSize = fontSize,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip,
+        onTextLayout = { result ->
+            if (result.hasVisualOverflow && fontSize > 12.sp) {
+                fontSize *= 0.9f
+            }
+        },
+        modifier = modifier,
+    )
+}
+
 @Composable
 fun RowMiniTag(text: String) {
     Text(

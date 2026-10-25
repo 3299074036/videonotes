@@ -110,6 +110,7 @@ class CatalogRepository @Inject constructor(
 ) {
     init {
         CatalogStore.init(context)
+        UserCatalog.init(context)
     }
 
     fun llmCurated(): List<CatalogEntry> = CatalogStore.llmCurated()

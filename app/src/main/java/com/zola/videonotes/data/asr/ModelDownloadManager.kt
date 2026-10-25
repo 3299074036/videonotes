@@ -1,6 +1,10 @@
 package com.zola.videonotes.data.asr
 
 import android.content.Context
+import com.zola.videonotes.data.catalog.CatalogStore
+import com.zola.videonotes.data.catalog.UserCatalog
+import com.zola.videonotes.data.catalog.mergeUserCatalog
+import com.zola.videonotes.data.catalog.toAsrModel
 import com.zola.videonotes.data.download.MobileDownloadConsent
 import com.zola.videonotes.data.download.ModelFileDownloader
 import com.zola.videonotes.data.download.NetworkGate
@@ -89,8 +93,24 @@ class ModelDownloadManager @Inject constructor(
     private val jobs = ConcurrentHashMap<String, Job>()
 
     init {
+        UserCatalog.init(context)
         // 启动时扫描本地已下载模型并逐文件强校验（IO 线程，不阻塞注入）
         appScope.launch { refreshAll() }
+    }
+
+    /** 生效的 ASR 模型（精选池 + 用户改动；已移除的不在列）。 */
+    fun effectiveModels(): List<AsrModel> =
+        mergeUserCatalog(CatalogStore.asrCurated(), UserCatalog.snapshot()).map { it.toAsrModel() }
+
+    /**
+     * 按 id 解析模型（用户改动优先 → 精选池；已移除或未知返回 null，
+     * 不像 AsrModelCatalog.get 那样回退默认模型——回退会让自定义/已移除 id 静默跑默认模型）。
+     */
+    fun resolveModel(modelId: String): AsrModel? {
+        val userState = UserCatalog.snapshot()
+        if (modelId in userState.removedIds) return null
+        return UserCatalog.entryFor(modelId)?.toAsrModel()
+            ?: CatalogStore.asrById(modelId)?.toAsrModel()
     }
 
     /** 模型根目录：filesDir/models/<modelId>/。 */
@@ -98,11 +118,11 @@ class ModelDownloadManager @Inject constructor(
 
     /** 同步完整性：全部文件存在且大小与清单真值精确一致（强校验见 refreshAll 的哈希复验）。 */
     fun isDownloaded(modelId: String): Boolean =
-        isModelComplete(modelDir(modelId), AsrModelCatalog.get(modelId))
+        resolveModel(modelId)?.let { isModelComplete(modelDir(modelId), it) } ?: false
 
     /** 开始（或继续）下载。重复调用正在下载的模型会被忽略。 */
     fun startDownload(modelId: String) {
-        val model = AsrModelCatalog.get(modelId)
+        val model = resolveModel(modelId) ?: return
         if (jobs[modelId]?.isActive == true) return
         if (isDownloaded(modelId)) {
             updateState(modelId) {
@@ -187,23 +207,45 @@ class ModelDownloadManager @Inject constructor(
     }
 
     private suspend fun refreshAll() = withContext(Dispatchers.IO) {
-        for (model in AsrModelCatalog.models) {
-            val dir = modelDir(model.id)
-            var done = model.files.sumOf { File(dir, it.name).takeIf { f -> f.exists() }?.length() ?: 0L }
-            var error: String? = null
-            val status = when {
-                !isModelComplete(dir, model) -> DlStatus.NOT_DOWNLOADED
-                verifyAllFiles(dir, model) -> DlStatus.COMPLETED
-                else -> {
-                    // 大小达标但 sha256 不符：删掉不符文件（与 LLM 侧同语义）
-                    deleteMismatchedFiles(dir, model)
-                    done = model.files.sumOf { File(dir, it.name).takeIf { f -> f.exists() }?.length() ?: 0L }
-                    error = "模型文件校验失败（SHA-256 不匹配），已删除，请重新下载"
-                    DlStatus.NOT_DOWNLOADED
+        for (model in effectiveModels()) {
+            refreshOne(model)
+        }
+    }
+
+    /** 用户改动后重算生效列表的下载态（进行中的下载不碰；恢复添加后找回已保留文件）。 */
+    fun refreshUserModels() {
+        appScope.launch {
+            withContext(Dispatchers.IO) {
+                for (model in effectiveModels()) {
+                    if (jobs[model.id]?.isActive == true) continue
+                    refreshOne(model)
                 }
             }
-            updateState(model.id) { ModelDlState(model.id, status, done, model.totalBytes, error) }
         }
+    }
+
+    /** 列表移除时丢弃该 id 的下载态（文件是否保留由调用方在此外决定）。 */
+    fun forgetState(modelId: String) {
+        jobs.remove(modelId)?.cancel()
+        _states.value = _states.value - modelId
+    }
+
+    private fun refreshOne(model: AsrModel) {
+        val dir = modelDir(model.id)
+        var done = model.files.sumOf { File(dir, it.name).takeIf { f -> f.exists() }?.length() ?: 0L }
+        var error: String? = null
+        val status = when {
+            !isModelComplete(dir, model) -> DlStatus.NOT_DOWNLOADED
+            verifyAllFiles(dir, model) -> DlStatus.COMPLETED
+            else -> {
+                // 大小达标但 sha256 不符：删掉不符文件（与 LLM 侧同语义）
+                deleteMismatchedFiles(dir, model)
+                done = model.files.sumOf { File(dir, it.name).takeIf { f -> f.exists() }?.length() ?: 0L }
+                error = "模型文件校验失败（SHA-256 不匹配），已删除，请重新下载"
+                DlStatus.NOT_DOWNLOADED
+            }
+        }
+        updateState(model.id) { ModelDlState(model.id, status, done, model.totalBytes, error) }
     }
 
     /** 逐文件哈希复验（指纹缓存命中直接通过）。须在 IO 线程调用。 */
@@ -261,7 +303,7 @@ class ModelDownloadManager @Inject constructor(
         }
     }
 
-    private fun totalOf(modelId: String): Long = AsrModelCatalog.get(modelId).totalBytes
+    private fun totalOf(modelId: String): Long = resolveModel(modelId)?.totalBytes ?: 0L
 
     private fun updateState(modelId: String, transform: (ModelDlState) -> ModelDlState) {
         val current = _states.value[modelId]

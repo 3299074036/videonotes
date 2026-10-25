@@ -9,6 +9,8 @@ import com.zola.videonotes.data.catalog.CatalogRepository
 import com.zola.videonotes.data.catalog.CatalogSource
 import com.zola.videonotes.data.catalog.DynamicModelRegistry
 import com.zola.videonotes.data.catalog.TemplateProbeState
+import com.zola.videonotes.data.catalog.UserCatalog
+import com.zola.videonotes.data.catalog.filesChanged
 import com.zola.videonotes.data.catalog.toLocalLlmModel
 import com.zola.videonotes.data.llm.local.LocalLlmModels
 import com.zola.videonotes.data.llm.local.LocalLlmPreferences
@@ -48,16 +50,9 @@ class LocalModelsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
-    companion object {
-        /** 置顶推荐 3 条（新人列表；已下载的自动落入已下载组，不重复出现）。 */
-        val FEATURED_IDS = listOf("qwen3-4b", "qwen3-1_7b", "qwen3-8b")
-    }
-
-    /** 浏览态列表数据：已下载组 + 置顶推荐组 + 更多模型组（均已按推荐序排好）。 */
+    /** 浏览态列表数据：单列（无分组），已按推荐→已下载→目录序排好。 */
     data class BrowseList(
-        val downloaded: List<CatalogEntry> = emptyList(),
-        val featured: List<CatalogEntry> = emptyList(),
-        val rest: List<CatalogEntry> = emptyList(),
+        val ordered: List<CatalogEntry> = emptyList(),
         val downloadedCount: Int = 0,
         val downloadedBytes: Long = 0,
     )
@@ -92,12 +87,20 @@ class LocalModelsViewModel @Inject constructor(
         info.totalMem / (1024.0 * 1024 * 1024)
     }
 
+    /** 保存后待定位的条目 id（列表展开并滚动到它一次，界面消费后清空）。 */
+    private val _highlightId = MutableStateFlow<String?>(null)
+    val highlightId: StateFlow<String?> = _highlightId.asStateFlow()
+
+    fun consumeHighlight() {
+        _highlightId.value = null
+    }
+
     /** 注册表重扫触发器（下载/删除/探针后自增）。 */
     private val registryTick = MutableStateFlow(0)
 
     val browseList: StateFlow<BrowseList> = combine(
-        dlStates, selectedId, registryTick, _useCaseFilter,
-    ) { states, currentId, _, useCase ->
+        dlStates, selectedId, registryTick, _useCaseFilter, UserCatalog.version,
+    ) { states, currentId, _, useCase, _ ->
         buildBrowseList(states, currentId, useCase)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), BrowseList())
 
@@ -106,39 +109,37 @@ class LocalModelsViewModel @Inject constructor(
         currentId: String?,
         useCase: String?,
     ): BrowseList {
-        val all = llmPrefs.resolveAllModels().map { m ->
-            // LocalLlmModel → CatalogEntry 视图（UI 只需要条目形态）
-            resolveEntry(m.id) ?: error("解析域条目缺失：${m.id}")
+        val all = llmPrefs.resolveAllModels().mapNotNull { m ->
+            // 解析不到的跳过不崩（移除/改动竞态下快照可能不一致，旧口径 error 属 111 行隐患）。
+            resolveEntry(m.id)
         }
         fun isCompleted(e: CatalogEntry) =
             states[e.id]?.status == LocalModelDownloadManager.DlStatus.COMPLETED
+        // 单列：已下载（不过滤）＋未下载精选（用途筛选后），按推荐→已下载→目录序排。
         val downloaded = all.filter { isCompleted(it) }
-            .sortedWith(
-                compareByDescending<CatalogEntry> { it.id == currentId }
-                    .thenBy { it.source.ordinal }
-                    .thenBy { it.displayName.lowercase() },
-            )
         var pending = all.filter { it.source == CatalogSource.CURATED && !isCompleted(it) }
         if (useCase != null) {
             pending = pending.filter { it.useCases.contains(useCase) }
         }
-        // 排序功能已下架：固定按推荐序排列（推荐在前，同组内保持目录序）。
-        pending = pending.sortedByDescending { it.recommended }
-        val featured = FEATURED_IDS.mapNotNull { id -> pending.firstOrNull { it.id == id } }
-        val rest = pending.filter { it.id !in FEATURED_IDS }
+        val catalogOrder = all.withIndex().associate { it.value.id to it.index }
+        val ordered = (downloaded + pending).sortedWith(
+            compareByDescending<CatalogEntry> { it.recommended }
+                .thenByDescending { isCompleted(it) }
+                .thenBy { catalogOrder[it.id] ?: Int.MAX_VALUE },
+        )
         val completedStates = states.values
             .filter { it.status == LocalModelDownloadManager.DlStatus.COMPLETED }
         return BrowseList(
-            downloaded = downloaded,
-            featured = featured,
-            rest = rest,
+            ordered = ordered,
             downloadedCount = completedStates.size,
             downloadedBytes = completedStates.sumOf { it.downloadedBytes },
         )
     }
 
-    fun resolveEntry(id: String): CatalogEntry? =
-        catalog.llmById(id) ?: registry.entryFor(id)
+    fun resolveEntry(id: String): CatalogEntry? {
+        if (id in UserCatalog.snapshot().removedIds) return null
+        return UserCatalog.entryFor(id) ?: catalog.llmById(id) ?: registry.entryFor(id)
+    }
 
     /** 探针结论（动态已下载行与设探针门精选行展示用，指纹失效返回 null）。 */
     fun probeStateOf(entry: CatalogEntry): TemplateProbeState? = when {
@@ -191,27 +192,93 @@ class LocalModelsViewModel @Inject constructor(
             dlManager.deleteModel(id)
             registryTick.value++
             if (wasSelected) {
-                // 删除已选模型不得选中悬空（合并包口径）：已下载的默认模型优先，
-                // 否则第一个已下载模型；均无则回落空选中（条显「未选择」），不得自动勾回默认。
-                val downloadedIds = dlManager.states.value.values
-                    .filter { it.status == LocalModelDownloadManager.DlStatus.COMPLETED }
-                    .map { it.modelId }
-                    .toSet()
-                val orderedIds = llmPrefs.resolveAllModels().map { it.id }
-                val fallbackId: String? = when {
-                    LocalLlmModels.DEFAULT_ID in downloadedIds -> LocalLlmModels.DEFAULT_ID
-                    else -> orderedIds.firstOrNull { it in downloadedIds }
-                }
-                if (fallbackId != null) {
-                    llmPrefs.setModelId(fallbackId)
-                    val fallbackName = resolveEntry(fallbackId)?.displayName ?: fallbackId
-                    _userMessage.tryEmit("已删除 $deletedName，已回落到 $fallbackName")
-                } else {
-                    llmPrefs.clearModelId()
-                    _userMessage.tryEmit("已删除 $deletedName，暂无已下载模型")
-                }
+                fallbackAfterRemoval(deletedName)
             }
         }
+    }
+
+    /** 删除/移除已选模型后的回落（与 delete 共用）：已下载的默认模型优先，否则第一个已下载模型；均无则回落空选中。 */
+    private suspend fun fallbackAfterRemoval(deletedName: String) {
+        val downloadedIds = dlManager.states.value.values
+            .filter { it.status == LocalModelDownloadManager.DlStatus.COMPLETED }
+            .map { it.modelId }
+            .toSet()
+        val orderedIds = llmPrefs.resolveAllModels().map { it.id }
+        val fallbackId: String? = when {
+            LocalLlmModels.DEFAULT_ID in downloadedIds -> LocalLlmModels.DEFAULT_ID
+            else -> orderedIds.firstOrNull { it in downloadedIds }
+        }
+        if (fallbackId != null) {
+            llmPrefs.setModelId(fallbackId)
+            val fallbackName = resolveEntry(fallbackId)?.displayName ?: fallbackId
+            _userMessage.tryEmit("已删除 $deletedName，已回落到 $fallbackName")
+        } else {
+            llmPrefs.clearModelId()
+            _userMessage.tryEmit("已删除 $deletedName，暂无已下载模型")
+        }
+    }
+
+    // ---------- 增删改（模型配置化） ----------
+
+    /** 新增自定义条目（表单已校验）。 */
+    fun addCustomEntry(entry: CatalogEntry) {
+        UserCatalog.addCustom(entry)
+        _highlightId.value = entry.id
+    }
+
+    /**
+     * 修改条目：只改名称/描述/用途/内存不碰下载态；改了文件则清掉已下载
+     * （删文件 + 丢下载态，下次下载走新文件）。
+     * 自定义条目原地更新；精选池条目走改动覆盖（改后去推荐）。
+     */
+    fun saveEditedEntry(old: CatalogEntry, new: CatalogEntry) {
+        viewModelScope.launch {
+            // 表单不改的 curated 属性沿用旧值（小模型提示、来源档位、下载量）。
+            val preserved = new.copy(
+                smallModelPrompt = old.smallModelPrompt,
+                origin = old.origin,
+                downloadCount = old.downloadCount,
+            )
+            if (filesChanged(old, preserved)) {
+                dlManager.deleteModel(old.id)
+                dlManager.forgetState(old.id)
+            }
+            if (UserCatalog.isCustom(old.id)) {
+                UserCatalog.updateCustom(preserved)
+            } else {
+                UserCatalog.saveEditedPoolEntry(preserved)
+            }
+            _highlightId.value = preserved.id
+        }
+    }
+
+    /**
+     * 从列表移除条目：下载中的先取消；文件按勾选删或保留
+     * （保留时丢弃下载态，恢复添加后按磁盘重算，可找回）。
+     * 移除已选模型时与删除文件同口径回落。
+     */
+    fun removeEntry(entry: CatalogEntry, deleteFiles: Boolean) {
+        viewModelScope.launch {
+            val wasSelected = selectedId.value == entry.id
+            val removedName = entry.displayName
+            if (deleteFiles) {
+                dlManager.deleteModel(entry.id)
+            } else {
+                dlManager.pauseDownload(entry.id)
+                dlManager.forgetState(entry.id)
+            }
+            UserCatalog.remove(entry.id)
+            if (wasSelected) {
+                fallbackAfterRemoval(removedName)
+            }
+        }
+    }
+
+    /** 从推荐池添加/恢复：清移除标记与改动覆盖，回到精选原值；已保留文件按磁盘重算态。 */
+    fun restorePoolEntry(id: String) {
+        UserCatalog.restore(id)
+        dlManager.refreshModel(id)
+        _highlightId.value = id
     }
 
     fun confirmMobile(id: String) = dlManager.confirmMobileDownload(id)

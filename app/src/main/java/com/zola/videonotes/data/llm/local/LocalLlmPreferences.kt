@@ -9,6 +9,7 @@ import com.zola.videonotes.data.catalog.CatalogRepository
 import com.zola.videonotes.data.catalog.CatalogSource
 import com.zola.videonotes.data.catalog.CuratedProbeStore
 import com.zola.videonotes.data.catalog.DynamicModelRegistry
+import com.zola.videonotes.data.catalog.UserCatalog
 import com.zola.videonotes.data.catalog.TemplateProbeState
 import com.zola.videonotes.data.catalog.toLocalLlmModel
 import com.zola.videonotes.data.download.Sha256
@@ -46,6 +47,10 @@ class LocalLlmPreferences @Inject constructor(
         val SELECTION_MIGRATED_V1 = booleanPreferencesKey("selection_migrated_v1")
     }
 
+    init {
+        UserCatalog.init(context)
+    }
+
     /**
      * 当前选择的本地模型 ID，可空：缺 key = 从未选择（2026-10-24 合并包「初次不默认勾选」）。
      * 老用户迁移见 [migrateSelectionIfNeeded]：磁盘上有任一模型文件即回填默认 id，否则保持 null。
@@ -79,18 +84,30 @@ class LocalLlmPreferences @Inject constructor(
         context.localLlmDataStore.edit { it[Keys.SELECTION_MIGRATED_V1] = true }
     }
 
-    /** 按解析链取模型定义（动态条目读本地注册表），未知 id 返回 null。 */
-    fun resolveModel(id: String): LocalLlmModel? =
-        catalog.llmById(id)?.toLocalLlmModel()
+    /** 按解析链取模型定义（用户改动优先 → 精选/影子 → 动态注册表；已移除的返回 null）。 */
+    fun resolveModel(id: String): LocalLlmModel? {
+        val userState = UserCatalog.snapshot()
+        if (id in userState.removedIds) return null
+        return UserCatalog.entryFor(id)?.toLocalLlmModel()
+            ?: catalog.llmById(id)?.toLocalLlmModel()
             ?: dynamicRegistry.entryFor(id)?.toLocalLlmModel()
+    }
 
     /** 解析链全集（正式 + 影子 + 已下载动态），供按文件名反查等场景使用。 */
     fun resolveAllModels(): List<LocalLlmModel> {
-        val base = LocalLlmModels.ALL
-        val known = base.map { it.id }.toSet()
-        return base + dynamicRegistry.entries()
-            .filter { it.id !in known }
-            .map { it.toLocalLlmModel() }
+        val userState = UserCatalog.snapshot()
+        val base = LocalLlmModels.ALL.mapNotNull { model ->
+            if (model.id in userState.removedIds) {
+                null
+            } else {
+                userState.edited[model.id]?.toLocalLlmModel() ?: model
+            }
+        }
+        val known = (base.map { it.id } + userState.custom.map { it.id }).toSet()
+        return base + userState.custom.map { it.toLocalLlmModel() } +
+            dynamicRegistry.entries()
+                .filter { it.id !in known }
+                .map { it.toLocalLlmModel() }
     }
 
     /** 当前选择的模型定义（可空：未选择或解析失败时返回 null，不再静默兜底默认条目）。 */
@@ -176,9 +193,10 @@ class LocalLlmPreferences @Inject constructor(
         return ok
     }
 
-    /** 条目是否使用小模型简化 prompt（动态条目恒 false，见方案 D12）。 */
+    /** 条目是否使用小模型简化 prompt（用户改动优先，改动不带该字段时沿用精选值）。 */
     fun smallModelPrompt(id: String): Boolean =
-        catalog.llmById(id)?.smallModelPrompt ?: false
+        UserCatalog.entryFor(id)?.smallModelPrompt
+            ?: catalog.llmById(id)?.smallModelPrompt ?: false
 
     /** 按文件名反查期望大小（引擎完整性预检用，覆盖精选/影子/动态全解析域）。 */
     fun expectedSizeForFileName(fileName: String): Long? =
