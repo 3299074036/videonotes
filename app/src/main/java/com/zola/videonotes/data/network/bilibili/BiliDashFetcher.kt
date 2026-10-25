@@ -45,4 +45,37 @@ class BiliDashFetcher @Inject constructor(
             Result.failure(IOException("B站接口请求失败：${t.message ?: t.javaClass.simpleName}"))
         }
     }
+
+    /**
+     * 取单文件直链（YunX 匿名方案：fnval=1 的 durl[0]，可直接播放无需合轨）。
+     * 未登录不走 DASH（匿名 DASH 更易失败）；拿不到时返回失败，调用方退回 DASH。
+     */
+    suspend fun fetchSingleFile(video: VideoInfo): Result<String> {
+        return try {
+            val (bvid, aid) = extractBiliIds(video)
+                ?: throw IOException("未能识别 BV 号或 AV 号")
+
+            val pagelist = if (bvid != null) api.pagelist(bvid = bvid) else api.pagelist(aid = aid)
+            if (pagelist.code == -412) throw IOException("B站暂时限制了请求，请稍后重试")
+            val cid = pagelist.data?.firstOrNull()?.cid?.takeIf { it > 0 }
+                ?: throw IOException("B站接口异常（分P），请稍后重试")
+
+            val playurl = if (bvid != null) {
+                api.playurlSingleFile(bvid = bvid, cid = cid)
+            } else {
+                api.playurlSingleFile(aid = aid, cid = cid)
+            }
+            if (playurl.code != 0) {
+                throw IOException("B站接口返回异常（code=${playurl.code}）")
+            }
+            val url = playurl.data?.durl?.firstOrNull()?.url?.takeIf { it.isNotBlank() }
+                ?: throw IOException("B站未返回单文件直链")
+            // 接口偶尔给 `//` 开头的协议相对地址
+            Result.success(if (url.startsWith("//")) "https:$url" else url)
+        } catch (e: IOException) {
+            Result.failure(e)
+        } catch (t: Throwable) {
+            Result.failure(IOException("B站接口请求失败：${t.message ?: t.javaClass.simpleName}"))
+        }
+    }
 }

@@ -100,6 +100,12 @@ class VideoStreamFetcher @Inject constructor(
 
     private suspend fun fetchBilibili(video: VideoInfo): Result<PlayableStream> {
         return try {
+            // YunX 经验：未登录不走 DASH（匿名 DASH 更易失败）；先试 fnval=1 单文件直链，
+            // 可直接播放；拿不到时再退回 DASH（音视频合成）。宁可低清可用。
+            val single = dashFetcher.fetchSingleFile(video).getOrNull()
+            if (single != null) {
+                return Result.success(PlayableStream(single, biliMediaHeaders()))
+            }
             val dash = dashFetcher.fetch(video).getOrThrow()
             val videoUrl = dash.video
                 ?.firstOrNull { it.baseUrl.isNotBlank() }
@@ -114,10 +120,7 @@ class VideoStreamFetcher @Inject constructor(
             Result.success(
                 PlayableStream(
                     url = videoUrl,
-                    headers = mapOf(
-                        "Referer" to "https://www.bilibili.com",
-                        "User-Agent" to PLAYER_UA,
-                    ),
+                    headers = biliMediaHeaders(),
                     audioUrl = audioUrl,
                 ),
             )
@@ -127,6 +130,15 @@ class VideoStreamFetcher @Inject constructor(
             Result.failure(IOException("视频流获取失败：${t.message ?: t.javaClass.simpleName}"))
         }
     }
+
+    /**
+     * B站媒体请求头（YunX 方案）：CDN 会校验 Referer，缺了直接 403；
+     * 桌面 Chrome UA（与 YunX 的 UA_CHROME 一致）。
+     */
+    private fun biliMediaHeaders(): Map<String, String> = mapOf(
+        "Referer" to "https://www.bilibili.com/",
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    )
 
     companion object {
         /**

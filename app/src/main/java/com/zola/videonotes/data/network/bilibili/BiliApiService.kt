@@ -55,4 +55,21 @@ interface BiliApiService {
         @Query("cid") cid: Long,
         @Query("fnval") fnval: Int = 16,
     ): BiliPlayurlResponse
+
+    /**
+     * 取单文件直链（YunX 匿名方案：fnval=1 的 durl，可直接播放无需合轨）。
+     * 未登录不走 DASH（匿名 DASH 更易失败）；单文件拿不到时调用方再退回 DASH。
+     */
+    @GET("x/player/playurl")
+    suspend fun playurlSingleFile(
+        @Query("bvid") bvid: String? = null,
+        @Query("aid") aid: Long? = null,
+        @Query("cid") cid: Long,
+        @Query("qn") qn: Int = 80,
+        @Query("fnval") fnval: Int = 1,
+        @Query("fnver") fnver: Int = 0,
+        @Query("fourk") fourk: Int = 1,
+        @Query("platform") platform: String = "html5",
+        @Query("high_quality") highQuality: Int = 1,
+    ): BiliPlayurlResponse
 }

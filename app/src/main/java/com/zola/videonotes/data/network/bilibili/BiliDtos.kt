@@ -103,6 +103,14 @@ data class BiliPlayurlResponse(
 
 data class BiliPlayurlData(
     @SerializedName("dash") val dash: BiliDash? = null,
+    /** fnval=1 单文件直链列表（YunX 匿名方案：直接播放，无需合轨）。 */
+    @SerializedName("durl") val durl: List<BiliDurl>? = null,
+)
+
+/** fnval=1 单文件直链条目。 */
+data class BiliDurl(
+    @SerializedName("url") val url: String = "",
+    @SerializedName("size") val size: Long = -1L,
 )
 
 data class BiliDash(

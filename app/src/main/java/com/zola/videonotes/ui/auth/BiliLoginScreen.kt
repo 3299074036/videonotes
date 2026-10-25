@@ -18,7 +18,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -33,7 +32,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.zola.videonotes.ui.theme.VideoNotesTokens
 
 /** B站官方登录页。 */
 private const val LOGIN_URL = "https://passport.bilibili.com/login"
@@ -85,15 +83,6 @@ fun BiliLoginScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            Text(
-                text = "账号密码仅在哔哩哔哩官方页面输入，本应用只保存登录凭证，不保存密码。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(
-                    horizontal = VideoNotesTokens.Space16,
-                    vertical = VideoNotesTokens.Space8,
-                ),
-            )
             Box(modifier = Modifier.fillMaxSize()) {
                 AndroidView(
                     factory = { ctx ->
@@ -137,6 +126,10 @@ private fun WebView.initBiliLoginWebView(
     settings.databaseEnabled = true
     settings.mediaPlaybackRequiresUserGesture = false
     settings.cacheMode = WebSettings.LOAD_DEFAULT
+    // 登录页协议文字与登录按钮重叠的修法：B站登录页是 Vue 单页应用，按钮位置按布局量出；
+    // 系统字体放大时协议文字多换行会撑出定高容器、压到按钮上，且页面量布局的时机可能早于视口稳定。
+    // textZoom=100 让页内字体不受系统字体缩放影响；加载完派发 resize 让 SPA 重算一次布局。
+    settings.textZoom = 100
     // B站登录页是按移动端视口排版的 H5，不开这两个会导致元素错位重叠
     settings.useWideViewPort = true
     settings.loadWithOverviewMode = true
@@ -153,6 +146,8 @@ private fun WebView.initBiliLoginWebView(
 
         override fun onPageFinished(view: WebView?, url: String?) {
             onPageLoadingChanged(false)
+            // 让单页应用按最终视口重算一次布局（协议区与登录按钮错位多因此而来）
+            view?.evaluateJavascript("window.dispatchEvent(new Event('resize'));", null)
             // 每次页面加载完检查登录态：B站登录成功后会写入 SESSDATA
             val cookies = CookieManager.getInstance().getCookie(COOKIE_URL)
             onCookiesChanged(cookies)

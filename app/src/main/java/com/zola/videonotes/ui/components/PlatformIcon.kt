@@ -1,5 +1,6 @@
 package com.zola.videonotes.ui.components
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
@@ -10,15 +11,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.zola.videonotes.R
 import com.zola.videonotes.domain.model.Platform
 
 /**
- * 平台图标：品牌色小方块 + 辨识字形（B站粉底"哔"、抖音黑底音符、
- * 小红书红底"红"、YouTube 红底 ▶），用在详情页标题左侧，对齐 YunX 解析页的平台图标样式。
+ * 平台图标：优先用 YunX 的平台图标集（`res/drawable/logo_*.png`，AGPL-3.0，
+ * 原样画、不裁圆、不加底色，与 YunX 的渲染约定一致）。
+ * YunX 图标集里没有 YouTube，YouTube 与未知平台沿用品牌色简标兜底。
  */
 @Composable
 fun PlatformIcon(
@@ -26,12 +31,25 @@ fun PlatformIcon(
     modifier: Modifier = Modifier,
     size: Dp = 28.dp,
 ) {
+    val logoRes = when (platform) {
+        Platform.BILIBILI -> R.drawable.logo_bilibili
+        Platform.DOUYIN -> R.drawable.logo_douyin
+        Platform.XIAOHONGSHU -> R.drawable.logo_xhs
+        else -> null
+    }
+    if (logoRes != null) {
+        Image(
+            painter = painterResource(logoRes),
+            contentDescription = platform.displayName,
+            contentScale = ContentScale.Fit,
+            modifier = modifier.size(size),
+        )
+        return
+    }
+    // 兜底简标：YouTube 红底 ▶、未知平台灰底问号
     val (background, glyph) = when (platform) {
-        Platform.BILIBILI -> Color(0xFFFB7299) to "哔"
-        Platform.DOUYIN -> Color(0xFF000000) to "♪"
-        Platform.XIAOHONGSHU -> Color(0xFFFF2442) to "红"
         Platform.YOUTUBE -> Color(0xFFFF0000) to "▶"
-        Platform.UNKNOWN -> Color(0xFF9E9E9E) to "?"
+        else -> Color(0xFF9E9E9E) to "?"
     }
     Box(
         modifier = modifier

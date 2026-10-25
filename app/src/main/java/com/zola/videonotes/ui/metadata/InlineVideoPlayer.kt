@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -80,17 +81,16 @@ fun VideoDetailTop(
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
-        // 头部：平台图标 + 标题
+        // 头部：平台图标与标题顶对齐，标题最多 2 行、超长省略
         Row(verticalAlignment = Alignment.Top) {
-            PlatformIcon(
-                platform = info.platform,
-                modifier = Modifier.padding(top = VideoNotesTokens.Space2),
-            )
+            PlatformIcon(platform = info.platform)
             Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
             Text(
                 text = info.title.ifBlank { "（无标题）" },
                 style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
         }
