@@ -1,6 +1,8 @@
 package com.zola.videonotes.ui.metadata
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -23,6 +26,8 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -30,6 +35,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -397,6 +403,11 @@ fun MetadataScreen(
                                 pipelineStartMillis = pipelineStartMillis,
                                 downloadState = downloadState,
                                 onDownloadClick = viewModel::downloadVideo,
+                                onPlayClick = if (state.info != null) {
+                                    { onPlayClick(state.info.storageKey(), 0L) }
+                                } else {
+                                    null
+                                },
                                 onCancel = viewModel::cancelCurrentTask,
                                 onRetryTranscribe = viewModel::onStepRetryTranscribe,
                                 onRetryGenerate = viewModel::onStepRetryGenerate,
@@ -436,7 +447,9 @@ fun MetadataScreen(
     }
 }
 
-/** 视频头：封面 + 标题 + 平台徽标 + 时长 + 作者 + 播放按钮（完成 / 已取消态共用）。 */
+/** 视频头：播放预览 + 标题 + 平台徽标 + 时长 + 作者 + 媒体行（完成 / 已取消态共用）。
+ * 版式参照 YunX 解析页：上面是带播放钮的预览（点封面或 👁 都进播放器），
+ * 下面是媒体行（预览 + 下载），工序单在下方原样保留。 */
 @Composable
 private fun MetadataHeader(
     info: VideoInfo,
@@ -446,33 +459,67 @@ private fun MetadataHeader(
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
-        if (info.coverUrl.isNotBlank()) {
-            AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
-                    .data(info.coverUrl)
-                    .crossfade(true)
-                    .build(),
-                contentDescription = "视频封面",
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(VideoNotesTokens.CoverAspectRatio)
-                    .clip(RoundedCornerShape(VideoNotesTokens.CornerLarge)),
-            )
-        } else {
-            // 无封面时的占位
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(VideoNotesTokens.CoverAspectRatio)
-                    .clip(RoundedCornerShape(VideoNotesTokens.CornerLarge)),
-                contentAlignment = Alignment.Center,
+        // 播放预览：封面 + 居中播放钮 + 右下角「点击播放」，点一下进播放器
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(VideoNotesTokens.CoverAspectRatio)
+                .clip(RoundedCornerShape(VideoNotesTokens.CornerLarge))
+                .clickable { onPlayClick(info.storageKey(), 0L) },
+            contentAlignment = Alignment.Center,
+        ) {
+            if (info.coverUrl.isNotBlank()) {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(info.coverUrl)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = "视频封面，点击播放",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                // 无封面时的占位
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Movie,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(VideoNotesTokens.Space48),
+                    )
+                }
+            }
+            // 居中播放钮
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
             ) {
                 Icon(
-                    imageVector = Icons.Filled.Movie,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(VideoNotesTokens.Space48),
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = "播放",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier
+                        .padding(VideoNotesTokens.Space12)
+                        .size(VideoNotesTokens.Space24),
+                )
+            }
+            // 右下角提示
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.BottomEnd,
+            ) {
+                Text(
+                    text = "点击播放",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier
+                        .padding(VideoNotesTokens.Space8)
+                        .clip(RoundedCornerShape(VideoNotesTokens.CornerSmall))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
+                        .padding(horizontal = VideoNotesTokens.Space8, vertical = VideoNotesTokens.Space2),
                 )
             }
         }
@@ -517,59 +564,77 @@ private fun MetadataHeader(
         }
 
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space16))
-        // 站内播放器入口：全平台均可播放（抖音/小红书播放时重解析取直链）
-        OutlinedButton(
-            onClick = { onPlayClick(info.storageKey(), 0L) },
-            modifier = Modifier.fillMaxWidth(),
+        // 媒体行：序号 + 格式说明 + 预览眼 + 下载（下载状态在此行内流转）
+        Surface(
+            shape = RoundedCornerShape(VideoNotesTokens.CornerMedium),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
         ) {
-            Icon(
-                imageVector = Icons.Filled.PlayArrow,
-                contentDescription = null,
-            )
-            Spacer(modifier = Modifier.size(VideoNotesTokens.Space8))
-            Text("播放视频")
-        }
-        Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
-        // 无水印下载：解析成功后可下载视频到系统下载目录（抖音去水印、B站合成单文件）
-        when (downloadState) {
-            is VideoDownloadUiState.Working -> {
-                OutlinedButton(
-                    onClick = {},
-                    enabled = false,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("正在下载 ${(downloadState.progress * 100).toInt()}%…")
-                }
-            }
-            is VideoDownloadUiState.Done -> {
-                Text(
-                    text = downloadState.message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            is VideoDownloadUiState.Failed -> {
-                OutlinedButton(
-                    onClick = onDownloadClick,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("下载视频（${downloadState.message}，点此重试）")
-                }
-            }
-            VideoDownloadUiState.Idle -> {
-                OutlinedButton(
-                    onClick = onDownloadClick,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Download,
-                        contentDescription = null,
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(VideoNotesTokens.Space12),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "1. 视频",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
                     )
-                    Spacer(modifier = Modifier.size(VideoNotesTokens.Space8))
-                    Text("下载视频（无水印）")
+                    Text(
+                        text = when (info.platform) {
+                            Platform.DOUYIN, Platform.XIAOHONGSHU -> "无水印 · MP4"
+                            Platform.BILIBILI -> "DASH 合成 · MP4"
+                            else -> "MP4"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // 预览眼：进播放器（与点封面同路）
+                IconButton(onClick = { onPlayClick(info.storageKey(), 0L) }) {
+                    Icon(
+                        imageVector = Icons.Filled.Visibility,
+                        contentDescription = "预览播放",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                when (downloadState) {
+                    is VideoDownloadUiState.Working -> {
+                        Text(
+                            text = "下载中 ${(downloadState.progress * 100).toInt()}%",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    is VideoDownloadUiState.Done -> {
+                        Text(
+                            text = "已保存到下载",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    is VideoDownloadUiState.Failed -> {
+                        TextButton(onClick = onDownloadClick) {
+                            Text("下载（失败，点此重试）")
+                        }
+                    }
+                    VideoDownloadUiState.Idle -> {
+                        TextButton(onClick = onDownloadClick) {
+                            Text("下载")
+                        }
+                    }
                 }
             }
+        }
+        // 下载成功后的完整提示（不挤媒体行）
+        if (downloadState is VideoDownloadUiState.Done) {
+            Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
+            Text(
+                text = downloadState.message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
         }
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space16))
     }

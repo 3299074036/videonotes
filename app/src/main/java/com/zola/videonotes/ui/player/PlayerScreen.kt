@@ -5,21 +5,27 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -61,7 +67,24 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val downloadState by viewModel.downloadState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val snackbar = remember { SnackbarHostState() }
+
+    // 下载成功/失败弹提示，消费后回空闲
+    LaunchedEffect(downloadState) {
+        when (val s = downloadState) {
+            is PlayerDownloadUiState.Done -> {
+                snackbar.showSnackbar(s.message)
+                viewModel.consumeDownloadState()
+            }
+            is PlayerDownloadUiState.Failed -> {
+                snackbar.showSnackbar(s.message)
+                viewModel.consumeDownloadState()
+            }
+            else -> {}
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -75,15 +98,36 @@ fun PlayerScreen(
                         )
                     }
                 },
+                actions = {
+                    // 右上角下载：点一下直接下载当前视频（无水印），不用退回详情页
+                    IconButton(
+                        onClick = { viewModel.downloadVideo() },
+                        enabled = downloadState !is PlayerDownloadUiState.Working,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Download,
+                            contentDescription = "下载视频",
+                        )
+                    }
+                },
             )
         },
+        snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            when (val state = uiState) {
+            // 下载进度条（下载中才显示）
+            if (downloadState is PlayerDownloadUiState.Working) {
+                LinearProgressIndicator(
+                    progress = { (downloadState as PlayerDownloadUiState.Working).progress },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Box(modifier = Modifier.fillMaxSize()) {
+                when (val state = uiState) {
                 is PlayerUiState.Loading -> PlayerLoadingView(message = "正在加载视频…")
                 is PlayerUiState.Failed -> PlayerErrorView(
                     message = state.message,
@@ -161,6 +205,7 @@ fun PlayerScreen(
                     )
                 }
             }
+        }
         }
     }
 }

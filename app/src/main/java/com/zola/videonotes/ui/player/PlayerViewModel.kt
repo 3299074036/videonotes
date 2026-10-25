@@ -3,6 +3,7 @@ package com.zola.videonotes.ui.player
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.zola.videonotes.data.download.VideoDownloader
 import com.zola.videonotes.data.parser.ParserRegistry
 import com.zola.videonotes.data.player.PlayableStream
 import com.zola.videonotes.data.player.VideoStreamFetcher
@@ -29,6 +30,21 @@ sealed interface PlayerUiState {
     data class Failed(val message: String) : PlayerUiState
 }
 
+/** 播放器页下载 UI 状态（右上角下载图标用）。 */
+sealed interface PlayerDownloadUiState {
+    /** 空闲 */
+    data object Idle : PlayerDownloadUiState
+
+    /** 下载中：progress 0f..1f */
+    data class Working(val progress: Float) : PlayerDownloadUiState
+
+    /** 下载成功：message 为保存位置提示 */
+    data class Done(val message: String) : PlayerDownloadUiState
+
+    /** 下载失败：message 为面向用户的中文原因 */
+    data class Failed(val message: String) : PlayerDownloadUiState
+}
+
 /**
  * 播放器页 ViewModel（M6）。
  *
@@ -42,6 +58,7 @@ sealed interface PlayerUiState {
 class PlayerViewModel @Inject constructor(
     private val streamFetcher: VideoStreamFetcher,
     private val parserRegistry: ParserRegistry,
+    private val videoDownloader: VideoDownloader,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -53,6 +70,36 @@ class PlayerViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow<PlayerUiState>(PlayerUiState.Loading)
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
+
+    private val _downloadState = MutableStateFlow<PlayerDownloadUiState>(PlayerDownloadUiState.Idle)
+    val downloadState: StateFlow<PlayerDownloadUiState> = _downloadState.asStateFlow()
+
+    /** 下载当前视频（无水印）到系统下载目录。下载中重复点击直接忽略。 */
+    fun downloadVideo() {
+        val video = buildVideoInfo(storageKey) ?: return
+        if (_downloadState.value is PlayerDownloadUiState.Working) return
+        _downloadState.value = PlayerDownloadUiState.Working(0f)
+        viewModelScope.launch {
+            // VideoDownloader 内部处理直链缺失：抖音/小红书重解析，B站/YouTube 取流
+            videoDownloader.download(video) { p ->
+                _downloadState.value = PlayerDownloadUiState.Working(p)
+            }.fold(
+                onSuccess = {
+                    _downloadState.value = PlayerDownloadUiState.Done("已保存到下载/VideoNotes，可在文件管理器中查看")
+                },
+                onFailure = { e ->
+                    _downloadState.value = PlayerDownloadUiState.Failed(e.message ?: "视频下载失败")
+                },
+            )
+        }
+    }
+
+    /** 下载提示消费后回到空闲（避免成功/失败文案常驻）。 */
+    fun consumeDownloadState() {
+        if (_downloadState.value !is PlayerDownloadUiState.Working) {
+            _downloadState.value = PlayerDownloadUiState.Idle
+        }
+    }
 
     init {
         load()

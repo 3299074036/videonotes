@@ -2,6 +2,7 @@ package com.zola.videonotes.ui.metadata
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -320,6 +321,8 @@ fun ProcessStepsPage(
     /** 下载状态：非 null 时在视频行下方显示下载入口（解析成功后即可下载无水印视频）。 */
     downloadState: VideoDownloadUiState? = null,
     onDownloadClick: () -> Unit = {},
+    /** 点视频行进播放器（与详情页封面预览同路）；不传则行不可点。 */
+    onPlayClick: (() -> Unit)? = null,
 ) {
     // 已用时：now − 持久化启动时刻；运行中每秒滚动刷新（重进页面不归零）
     var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -342,9 +345,17 @@ fun ProcessStepsPage(
                 .verticalScroll(rememberScrollState()),
         ) {
             Spacer(modifier = Modifier.height(VideoNotesTokens.Space16))
-            // 视频行：封面 + 标题 + 作者 · 平台 · 时长
+            // 视频行：封面 + 标题 + 作者 · 平台 · 时长（可点进播放器）
             if (info != null) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                val videoRowModifier = if (onPlayClick != null) {
+                    Modifier.clickable(onClick = onPlayClick)
+                } else {
+                    Modifier
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = videoRowModifier,
+                ) {
                     Box(
                         modifier = Modifier
                             .size(
