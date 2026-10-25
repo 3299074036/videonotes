@@ -36,6 +36,7 @@ fun PlatformIcon(
         Platform.DOUYIN -> R.drawable.logo_douyin
         Platform.XIAOHONGSHU -> R.drawable.logo_xhs
         Platform.KUAISHOU -> R.drawable.logo_kuaishou
+        Platform.WEIBO -> R.drawable.logo_weibo
         else -> null
     }
     if (logoRes != null) {

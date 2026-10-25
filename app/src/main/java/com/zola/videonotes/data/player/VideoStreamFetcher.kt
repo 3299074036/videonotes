@@ -45,7 +45,7 @@ data class ProgressiveCandidate(
  *
  * - YouTube：NewPipe `videoStreams`（progressive，非 DASH）中选最优；
  * - B站：playurl dash.video 首个有效直链；
- * - P1 平台（抖音/小红书）与失败返回中文错误，不做任何绕过。
+ * - P1 平台（抖音/小红书/快手/微博）与失败返回中文错误，不做任何绕过。
  */
 @Singleton
 class VideoStreamFetcher @Inject constructor(
@@ -58,8 +58,8 @@ class VideoStreamFetcher @Inject constructor(
         when (video.platform) {
             Platform.YOUTUBE -> fetchYoutube(video)
             Platform.BILIBILI -> fetchBilibili(video)
-            // 抖音/小红书/快手：解析器已拿到直链，直接用（无需另取流）
-            Platform.DOUYIN, Platform.XIAOHONGSHU, Platform.KUAISHOU -> {
+            // 抖音/小红书/快手/微博：解析器已拿到直链，直接用（无需另取流）
+            Platform.DOUYIN, Platform.XIAOHONGSHU, Platform.KUAISHOU, Platform.WEIBO -> {
                 val url = video.mediaUrl.takeIf { it.isNotBlank() }
                 if (url != null) {
                     Result.success(PlayableStream(url, video.mediaHeaders))

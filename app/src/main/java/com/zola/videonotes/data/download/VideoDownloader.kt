@@ -43,7 +43,7 @@ class VideoDownloader @Inject constructor(
 
     /**
      * 下载视频。
-     * @param video 解析得到的 VideoInfo（mediaUrl 为空时抖音/小红书会先重新解析一次）
+     * @param video 解析得到的 VideoInfo（mediaUrl 为空时抖音/小红书/快手/微博会先重新解析一次）
      * @param onProgress 0f..1f 进度回调
      * @return 成功时为 MediaStore Uri，失败时为中文原因
      */
@@ -51,7 +51,7 @@ class VideoDownloader @Inject constructor(
         return try {
             val fileName = sanitizeFileName(video.title.ifBlank { "${video.platform.name}_${video.videoId}" }) + ".mp4"
             val tmpFile = when (video.platform) {
-                Platform.DOUYIN, Platform.XIAOHONGSHU, Platform.KUAISHOU -> {
+                Platform.DOUYIN, Platform.XIAOHONGSHU, Platform.KUAISHOU, Platform.WEIBO -> {
                     val info = video.takeIf { it.mediaUrl.isNotBlank() }
                         ?: parserRegistry.parse(video.sourceUrl).getOrNull()
                         ?: throw IOException("该视频未解析到可下载的直链，请重新解析")

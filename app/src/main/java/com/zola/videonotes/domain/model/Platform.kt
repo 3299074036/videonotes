@@ -7,5 +7,6 @@ enum class Platform(val displayName: String) {
     DOUYIN("抖音"),
     XIAOHONGSHU("小红书"),
     KUAISHOU("快手"),
+    WEIBO("微博"),
     UNKNOWN("未知平台"),
 }

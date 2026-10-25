@@ -256,6 +256,7 @@ class MetadataViewModel @Inject constructor(
      * sourceUrl 一旦丢了 xsec_token 就会撞登录墙，而详情页手里的直链本身就是可播的；
      * 快手重解析无 token 门槛，但直链直出同样更稳。
      * 抖音：直链时效短且重解析是通的，仍走重解析；重解析失败时退回已存直链一试。
+     * 微博走抖音同款：重解析只是廉价 JSON 调用且无 token 脆弱性，不走小红书的直链直出。
      * B站/YouTube 直接取流。取流中重复调用直接忽略。
      */
     fun loadInlineStream(video: VideoInfo) {
@@ -270,7 +271,7 @@ class MetadataViewModel @Inject constructor(
                         parserRegistry.parse(video.sourceUrl).getOrNull()
                     }
                 }
-                Platform.DOUYIN -> {
+                Platform.DOUYIN, Platform.WEIBO -> {
                     parserRegistry.parse(video.sourceUrl).getOrNull()
                         ?: video.takeIf { it.mediaUrl.isNotBlank() }
                 }

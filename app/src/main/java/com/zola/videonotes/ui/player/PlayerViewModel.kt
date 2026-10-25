@@ -145,11 +145,12 @@ class PlayerViewModel @Inject constructor(
                 )
                 return@launch
             }
-            // 抖音/小红书/快手：播放前重新解析取新鲜直链。buildVideoInfo 已算好有效 sourceUrl
+            // 抖音/小红书/快手/微博：播放前重新解析取新鲜直链。buildVideoInfo 已算好有效 sourceUrl
             // （导航参数 → 库里原链接 → storageKey 反推地址），直接用它解析。
             val playableVideo = if (video.platform == Platform.DOUYIN ||
                 video.platform == Platform.XIAOHONGSHU ||
-                video.platform == Platform.KUAISHOU
+                video.platform == Platform.KUAISHOU ||
+                video.platform == Platform.WEIBO
             ) {
                 parserRegistry.parse(video.sourceUrl).getOrNull() ?: run {
                     _uiState.value = PlayerUiState.Failed("该视频暂不支持站内播放，请重新解析")
@@ -182,6 +183,9 @@ class PlayerViewModel @Inject constructor(
             Platform.DOUYIN -> "https://www.douyin.com/video/$videoId"
             Platform.XIAOHONGSHU -> "https://www.xiaohongshu.com/explore/$videoId"
             Platform.KUAISHOU -> "https://v.m.chenzhongtech.com/fw/photo/$videoId"
+            // 微博：status/tv 的 videoId 可反推手机站详情页；fid 的 videoId 含冒号
+            // （如 1034:xxx），无法反推，返回空串走库链接（库链接为空时播放器会报重新解析）。
+            Platform.WEIBO -> if (videoId.contains(":")) "" else "https://m.weibo.cn/detail/$videoId"
             else -> ""
         }
         // 有效 sourceUrl 优先级：详情页带过来的原始链接 → 库里存的原始链接

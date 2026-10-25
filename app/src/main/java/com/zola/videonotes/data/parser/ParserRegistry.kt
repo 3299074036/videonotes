@@ -8,7 +8,7 @@ import javax.inject.Singleton
 /**
  * 解析器注册表：按 matches() 顺序分发到各平台解析器。
  *
- * P0（YouTube / B站）优先于 P1（抖音 / 小红书 / 快手）匹配；P1 平台接口变化时只改对应实现，
+ * P0（YouTube / B站）优先于 P1（抖音 / 小红书 / 快手 / 微博）匹配；P1 平台接口变化时只改对应实现，
  * 不影响主链路。
  */
 @Singleton
@@ -18,10 +18,11 @@ class ParserRegistry @Inject constructor(
     private val douyinParser: DouyinParser,
     private val xiaohongshuParser: XiaohongshuParser,
     private val kuaishouParser: KuaishouParser,
+    private val weiboParser: WeiboParser,
 ) {
 
     private val parsers: List<VideoParser>
-        get() = listOf(youtubeParser, bilibiliParser, douyinParser, xiaohongshuParser, kuaishouParser)
+        get() = listOf(youtubeParser, bilibiliParser, douyinParser, xiaohongshuParser, kuaishouParser, weiboParser)
 
     /** 找到能处理该链接的解析器，无匹配返回 null。 */
     fun parserFor(url: String): VideoParser? =
@@ -40,7 +41,7 @@ class ParserRegistry @Inject constructor(
                     if (extracted == null)
                         "没有识别到视频链接：请粘贴包含 https 链接的分享文本（小红书分享口令暂不支持解析）"
                     else
-                        "暂不支持的链接（${hostOf(target)}）：请粘贴 YouTube / B站 / 抖音 / 小红书 / 快手的视频链接",
+                        "暂不支持的链接（${hostOf(target)}）：请粘贴 YouTube / B站 / 抖音 / 小红书 / 快手 / 微博的视频链接",
                 ),
             )
         return parser.parse(target)

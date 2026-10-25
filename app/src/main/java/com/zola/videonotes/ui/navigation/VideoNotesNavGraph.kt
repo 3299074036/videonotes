@@ -225,6 +225,8 @@ private fun storageKeyToUrl(storageKey: String): String? {
         Platform.DOUYIN -> "https://www.douyin.com/video/$videoId"
         Platform.XIAOHONGSHU -> "https://www.xiaohongshu.com/explore/$videoId"
         Platform.KUAISHOU -> "https://v.m.chenzhongtech.com/fw/photo/$videoId"
+        // 微博：status/tv 反推手机站详情页；fid 的 videoId 含冒号无法反推，走 else 的 null。
+        Platform.WEIBO -> if (videoId.contains(":")) null else "https://m.weibo.cn/detail/$videoId"
         else -> null
     }
 }
