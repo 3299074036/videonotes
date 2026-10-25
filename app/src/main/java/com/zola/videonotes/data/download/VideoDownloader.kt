@@ -51,7 +51,7 @@ class VideoDownloader @Inject constructor(
         return try {
             val fileName = sanitizeFileName(video.title.ifBlank { "${video.platform.name}_${video.videoId}" }) + ".mp4"
             val tmpFile = when (video.platform) {
-                Platform.DOUYIN, Platform.XIAOHONGSHU -> {
+                Platform.DOUYIN, Platform.XIAOHONGSHU, Platform.KUAISHOU -> {
                     val info = video.takeIf { it.mediaUrl.isNotBlank() }
                         ?: parserRegistry.parse(video.sourceUrl).getOrNull()
                         ?: throw IOException("该视频未解析到可下载的直链，请重新解析")

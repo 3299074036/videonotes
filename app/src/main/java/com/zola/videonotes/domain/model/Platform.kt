@@ -6,5 +6,6 @@ enum class Platform(val displayName: String) {
     BILIBILI("B站"),
     DOUYIN("抖音"),
     XIAOHONGSHU("小红书"),
+    KUAISHOU("快手"),
     UNKNOWN("未知平台"),
 }

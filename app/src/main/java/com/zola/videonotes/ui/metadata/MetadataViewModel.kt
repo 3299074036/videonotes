@@ -252,8 +252,9 @@ class MetadataViewModel @Inject constructor(
 
     /**
      * 内嵌播放器取流（YunX 模式：解析结果就是播放源）。
-     * 小红书：直接播详情页解析好的 mediaUrl + mediaHeaders，不重解析——重解析用的
-     * sourceUrl 一旦丢了 xsec_token 就会撞登录墙，而详情页手里的直链本身就是可播的。
+     * 小红书/快手：直接播详情页解析好的 mediaUrl + mediaHeaders，不重解析——小红书重解析用的
+     * sourceUrl 一旦丢了 xsec_token 就会撞登录墙，而详情页手里的直链本身就是可播的；
+     * 快手重解析无 token 门槛，但直链直出同样更稳。
      * 抖音：直链时效短且重解析是通的，仍走重解析；重解析失败时退回已存直链一试。
      * B站/YouTube 直接取流。取流中重复调用直接忽略。
      */
@@ -262,7 +263,7 @@ class MetadataViewModel @Inject constructor(
         _inlinePlayerState.value = InlinePlayerState.Loading
         viewModelScope.launch {
             val playable = when (video.platform) {
-                Platform.XIAOHONGSHU -> {
+                Platform.XIAOHONGSHU, Platform.KUAISHOU -> {
                     if (video.mediaUrl.isNotBlank()) {
                         video
                     } else {

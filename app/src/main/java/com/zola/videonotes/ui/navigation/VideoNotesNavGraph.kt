@@ -224,6 +224,7 @@ private fun storageKeyToUrl(storageKey: String): String? {
         Platform.YOUTUBE -> "https://www.youtube.com/watch?v=$videoId"
         Platform.DOUYIN -> "https://www.douyin.com/video/$videoId"
         Platform.XIAOHONGSHU -> "https://www.xiaohongshu.com/explore/$videoId"
+        Platform.KUAISHOU -> "https://v.m.chenzhongtech.com/fw/photo/$videoId"
         else -> null
     }
 }

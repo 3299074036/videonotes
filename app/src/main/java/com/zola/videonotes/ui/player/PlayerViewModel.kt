@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.zola.videonotes.data.auth.XhsAuthStore
 import com.zola.videonotes.data.download.VideoDownloader
 import com.zola.videonotes.data.local.VideoDao
+import com.zola.videonotes.data.parser.KuaishouParser
 import com.zola.videonotes.data.parser.ParserRegistry
 import com.zola.videonotes.data.player.PlayableStream
 import com.zola.videonotes.data.player.VideoStreamFetcher
@@ -51,8 +52,9 @@ sealed interface PlayerDownloadUiState {
  * 播放器页 ViewModel（M6）。
  *
  * 取流优先级（YunX 模式：解析结果就是播放源）：
- * 1. 详情页带过来的 mediaUrl（小红书）：直接播，不重解析。请求头不走导航（Cookie 不进
- *    路由参数），播放时按 [XhsAuthStore] 现取桌面 UA + Referer + web_session。
+ * 1. 详情页带过来的 mediaUrl（小红书/快手）：直接播，不重解析。请求头不走导航（Cookie 不进
+ *    路由参数），播放时按平台现取：小红书取桌面 UA + Referer + web_session，
+ *    快手取 iOS UA + Referer。
  * 2. 详情页带过来的 sourceUrl（含小红书 xsec_token）：重解析一次取新鲜直链。
  * 3. 库里存的原始链接（同 2，新解析的含 token；笔记页点播放走这条）。
  * 4. 兜底：按 storageKey 重建的地址重解析（抖音可用；小红书无 token 会撞登录墙）。
@@ -129,16 +131,26 @@ class PlayerViewModel @Inject constructor(
                 _uiState.value = PlayerUiState.Failed("视频信息无效")
                 return@launch
             }
-            // 小红书 + 详情页带了直链：直接播（YunX 模式），不重解析。
-            if (video.platform == Platform.XIAOHONGSHU && mediaUrlArg.isNotBlank()) {
+            // 小红书/快手 + 详情页带了直链：直接播（YunX 模式），不重解析。
+            // 请求头按平台取（小红书要 Cookie、快手要 Referer），都不走导航参数。
+            if ((video.platform == Platform.XIAOHONGSHU || video.platform == Platform.KUAISHOU) &&
+                mediaUrlArg.isNotBlank()
+            ) {
+                val headers = when (video.platform) {
+                    Platform.XIAOHONGSHU -> xhsMediaHeaders()
+                    else -> KuaishouParser.mediaHeaders()
+                }
                 _uiState.value = PlayerUiState.Ready(
-                    PlayableStream(url = mediaUrlArg, headers = xhsMediaHeaders()),
+                    PlayableStream(url = mediaUrlArg, headers = headers),
                 )
                 return@launch
             }
-            // 抖音/小红书：播放前重新解析取新鲜直链。buildVideoInfo 已算好有效 sourceUrl
+            // 抖音/小红书/快手：播放前重新解析取新鲜直链。buildVideoInfo 已算好有效 sourceUrl
             // （导航参数 → 库里原链接 → storageKey 反推地址），直接用它解析。
-            val playableVideo = if (video.platform == Platform.DOUYIN || video.platform == Platform.XIAOHONGSHU) {
+            val playableVideo = if (video.platform == Platform.DOUYIN ||
+                video.platform == Platform.XIAOHONGSHU ||
+                video.platform == Platform.KUAISHOU
+            ) {
                 parserRegistry.parse(video.sourceUrl).getOrNull() ?: run {
                     _uiState.value = PlayerUiState.Failed("该视频暂不支持站内播放，请重新解析")
                     return@launch
@@ -169,6 +181,7 @@ class PlayerViewModel @Inject constructor(
             Platform.YOUTUBE -> "https://www.youtube.com/watch?v=$videoId"
             Platform.DOUYIN -> "https://www.douyin.com/video/$videoId"
             Platform.XIAOHONGSHU -> "https://www.xiaohongshu.com/explore/$videoId"
+            Platform.KUAISHOU -> "https://v.m.chenzhongtech.com/fw/photo/$videoId"
             else -> ""
         }
         // 有效 sourceUrl 优先级：详情页带过来的原始链接 → 库里存的原始链接
@@ -184,7 +197,11 @@ class PlayerViewModel @Inject constructor(
             author = "",
             sourceUrl = sourceUrl,
             mediaUrl = mediaUrlArg,
-            mediaHeaders = if (platform == Platform.XIAOHONGSHU) xhsMediaHeaders() else emptyMap(),
+            mediaHeaders = when (platform) {
+                Platform.XIAOHONGSHU -> xhsMediaHeaders()
+                Platform.KUAISHOU -> KuaishouParser.mediaHeaders()
+                else -> emptyMap()
+            },
         )
     }
 }

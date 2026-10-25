@@ -58,8 +58,8 @@ class VideoStreamFetcher @Inject constructor(
         when (video.platform) {
             Platform.YOUTUBE -> fetchYoutube(video)
             Platform.BILIBILI -> fetchBilibili(video)
-            // 抖音/小红书：解析器已通过 WebView 拿到直链，直接用（无需另取流）
-            Platform.DOUYIN, Platform.XIAOHONGSHU -> {
+            // 抖音/小红书/快手：解析器已拿到直链，直接用（无需另取流）
+            Platform.DOUYIN, Platform.XIAOHONGSHU, Platform.KUAISHOU -> {
                 val url = video.mediaUrl.takeIf { it.isNotBlank() }
                 if (url != null) {
                     Result.success(PlayableStream(url, video.mediaHeaders))

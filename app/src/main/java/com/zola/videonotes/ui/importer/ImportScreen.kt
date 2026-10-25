@@ -181,7 +181,7 @@ fun ImportScreen(
             // 页脚：平台支持与授权声明收敛为两行小字
             //（原顶部横幅 / 平台 chips / 底部大标题区三处重复提示已合并至此）
             Text(
-                text = "支持哔哩哔哩 / YouTube，抖音、小红书为实验性",
+                text = "支持哔哩哔哩 / YouTube，抖音、小红书、快手为实验性",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
