@@ -79,6 +79,9 @@ fun LocalModelsContent(
     val selectedId by vm.selectedId.collectAsStateWithLifecycle()
     val useCaseFilter by vm.useCaseFilter.collectAsStateWithLifecycle()
     val pendingMobile by vm.pendingMobileConfirm.collectAsStateWithLifecycle()
+    // L-30：手动校验进行态（单条按钮与底部全部按钮共用）
+    val probingIds by vm.probingIds.collectAsStateWithLifecycle()
+    val revalidatingAll by vm.revalidatingAll.collectAsStateWithLifecycle()
     var showTermDialog by remember { mutableStateOf(false) }
 
     // 保存/恢复后定位：单列已无分组，直接滚动到该行，消费后清空。
@@ -100,7 +103,11 @@ fun LocalModelsContent(
     }
 
     if (showTermDialog) {
-        TermInfoDialog(title = "术语说明", body = TermNotes.ALL) { showTermDialog = false }
+        TermInfoDialog(
+            title = "术语说明",
+            body = TermNotes.ALL,
+            onDismiss = { showTermDialog = false },
+        )
     }
 
     Column(modifier = Modifier.padding(horizontal = VideoNotesTokens.Space16)) {
@@ -131,6 +138,8 @@ fun LocalModelsContent(
                 manageMode = manageMode,
                 onEdit = { onEditEntry(entry) },
                 onRemove = { onRemoveEntry(entry) },
+                probingIds = probingIds,
+                onRevalidate = { vm.revalidateProbe(it) },
                 rowModifier = if (entry.id == highlightId) {
                     Modifier.bringIntoViewRequester(bringIntoViewRequester)
                 } else {
@@ -167,6 +176,15 @@ fun LocalModelsContent(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("＋ 新增模型")
+            }
+            // L-30 B：全部校验（行布局不动；无已下载模型时禁用，校验中禁用防重复点）
+            Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
+            OutlinedButton(
+                onClick = { vm.revalidateAll() },
+                enabled = !revalidatingAll && browse.downloadedCount > 0,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (revalidatingAll) "校验中…" else "重新校验全部已下载模型")
             }
         }
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
@@ -212,6 +230,8 @@ private fun CatalogEntryRow(
     manageMode: Boolean = false,
     onEdit: () -> Unit = {},
     onRemove: () -> Unit = {},
+    probingIds: Set<String> = emptySet(),
+    onRevalidate: (String) -> Unit = {},
     rowModifier: Modifier = Modifier,
 ) {
     val state = dlStates[entry.id] ?: LocalModelDownloadManager.ModelDlState(
@@ -229,9 +249,24 @@ private fun CatalogEntryRow(
     if (showDetail) {
         // ⓘ 弹窗标题用英文原名（无英文原名回落显示中文名）。
         val detailTitle = entry.originalName?.takeIf { it.isNotBlank() } ?: entry.displayName
-        TermInfoDialog(title = detailTitle, body = entryDetailText(entry)) {
-            showDetail = false
-        }
+        // L-30 A：单条校验入口放弹窗里（行布局不动）。只对已下载且探针有意义的
+        // 条目出现；校验中按钮禁用并显“校验中…”，弹窗保持打开，跑完副行结论刷新。
+        val probing = entry.id in probingIds
+        TermInfoDialog(
+            title = detailTitle,
+            body = entryDetailText(entry),
+            onDismiss = { showDetail = false },
+            dismissButton = if (vm.canRevalidate(entry)) {
+                {
+                    TextButton(
+                        onClick = { onRevalidate(entry.id) },
+                        enabled = !probing,
+                    ) { Text(if (probing) "校验中…" else "重新校验") }
+                }
+            } else {
+                null
+            },
+        )
     }
 
     Column(modifier = rowModifier.fillMaxWidth()) {
@@ -287,11 +322,27 @@ private fun CatalogEntryRow(
                 contentAlignment = Alignment.CenterEnd,
             ) {
                 if (manageMode) {
-                    Row {
-                        TextButton(onClick = onEdit) { Text("编辑") }
-                        TextButton(onClick = onRemove) {
-                            Text("移除", color = MaterialTheme.colorScheme.error)
-                        }
+                    // 换行修复方案一：裸文字（与正常态下载/删除同款），不用 TextButton
+                    // 的内边距，108dp 槽绰绰有余；强制单行兜底，字体放大也不折行。
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            text = "编辑",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Clip,
+                            modifier = Modifier.clickable { onEdit() },
+                        )
+                        Text(
+                            text = "移除",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Clip,
+                            modifier = Modifier.clickable { onRemove() },
+                        )
                     }
                 } else {
                     // 右侧动作位严格只有两态：未下载「下载」、已下载「删除」。

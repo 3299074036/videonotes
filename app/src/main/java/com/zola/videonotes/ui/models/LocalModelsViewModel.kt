@@ -98,6 +98,14 @@ class LocalModelsViewModel @Inject constructor(
     /** 注册表重扫触发器（下载/删除/探针后自增）。 */
     private val registryTick = MutableStateFlow(0)
 
+    /** 正在手动校验的条目 id（单条与批量共用，UI 据此显“校验中…”并禁用重复点）。 */
+    private val _probingIds = MutableStateFlow<Set<String>>(emptySet())
+    val probingIds: StateFlow<Set<String>> = _probingIds.asStateFlow()
+
+    /** 批量校验进行中（列表底部按钮据此显“校验中…”并禁用）。 */
+    private val _revalidatingAll = MutableStateFlow(false)
+    val revalidatingAll: StateFlow<Boolean> = _revalidatingAll.asStateFlow()
+
     val browseList: StateFlow<BrowseList> = combine(
         dlStates, selectedId, registryTick, _useCaseFilter, UserCatalog.version,
     ) { states, currentId, _, useCase, _ ->
@@ -193,6 +201,60 @@ class LocalModelsViewModel @Inject constructor(
             registryTick.value++
             if (wasSelected) {
                 fallbackAfterRemoval(deletedName)
+            }
+        }
+    }
+
+    // ---------- L-30 手动重新校验（A：单条；B：全部） ----------
+
+    /** 探针入口是否对该条目有意义：已下载 +（动态条目或设探针门精选条目）。 */
+    fun canRevalidate(entry: CatalogEntry): Boolean {
+        if (dlStates.value[entry.id]?.status != LocalModelDownloadManager.DlStatus.COMPLETED) {
+            return false
+        }
+        return entry.source == CatalogSource.DYNAMIC || entry.requiresProbe
+    }
+
+    /** 单条校验：跑完刷 registryTick，副行结论即时刷新（不等启动补探的延迟重扫）。 */
+    fun revalidateProbe(id: String) {
+        val entry = resolveEntry(id) ?: return
+        if (!canRevalidate(entry) || id in _probingIds.value) return
+        viewModelScope.launch {
+            _probingIds.value += id
+            try {
+                dlManager.revalidateProbe(id)
+            } finally {
+                _probingIds.value -= id
+                registryTick.value++
+            }
+        }
+    }
+
+    /** 全部校验：按列表顺序逐个跑（探针本身单线程，串行最稳），单个失败不中断其余。 */
+    fun revalidateAll() {
+        if (_revalidatingAll.value) return
+        viewModelScope.launch {
+            _revalidatingAll.value = true
+            try {
+                val targets = browseList.value.ordered.filter { canRevalidate(it) }
+                var done = 0
+                for (entry in targets) {
+                    _probingIds.value += entry.id
+                    try {
+                        if (dlManager.revalidateProbe(entry.id)) done++
+                    } finally {
+                        _probingIds.value -= entry.id
+                    }
+                    registryTick.value++
+                }
+                if (targets.isEmpty()) {
+                    _userMessage.tryEmit("没有可校验的已下载模型")
+                } else {
+                    _userMessage.tryEmit("已重新校验 $done/${targets.size} 个模型")
+                }
+            } finally {
+                _revalidatingAll.value = false
+                registryTick.value++
             }
         }
     }

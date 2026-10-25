@@ -47,6 +47,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -463,7 +464,11 @@ private fun AsrTabContent(
     }
 
     if (showTermDialog) {
-        TermInfoDialog(title = "术语说明", body = TermNotes.ALL) { showTermDialog = false }
+        TermInfoDialog(
+            title = "术语说明",
+            body = TermNotes.ALL,
+            onDismiss = { showTermDialog = false },
+        )
     }
 
     Column(
@@ -716,9 +721,11 @@ private fun AsrModelRow(
         }
         val detailTitle =
             catalogEntry?.originalName?.takeIf { it.isNotBlank() } ?: item.model.displayName
-        TermInfoDialog(title = detailTitle, body = detailBody) {
-            showDetail = false
-        }
+        TermInfoDialog(
+            title = detailTitle,
+            body = detailBody,
+            onDismiss = { showDetail = false },
+        )
     }
 
     Column(modifier = rowModifier.fillMaxWidth()) {
@@ -775,11 +782,27 @@ private fun AsrModelRow(
                 contentAlignment = Alignment.CenterEnd,
             ) {
                 if (manageMode) {
-                    Row {
-                        TextButton(onClick = onEdit) { Text("编辑") }
-                        TextButton(onClick = onRemove) {
-                            Text("移除", color = MaterialTheme.colorScheme.error)
-                        }
+                    // 换行修复方案一：裸文字（与正常态下载/删除同款），不用 TextButton
+                    // 的内边距，108dp 槽绰绰有余；强制单行兜底，字体放大也不折行。
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            text = "编辑",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Clip,
+                            modifier = Modifier.clickable { onEdit() },
+                        )
+                        Text(
+                            text = "移除",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Clip,
+                            modifier = Modifier.clickable { onRemove() },
+                        )
                     }
                 } else {
                     // 右侧动作位严格只有两态：未下载「下载」、已下载「删除」。

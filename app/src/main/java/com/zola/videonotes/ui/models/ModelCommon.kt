@@ -103,9 +103,15 @@ object TermNotes {
         "上下文：一次能看的最长文稿，超了会分段。"
 }
 
-/** 通用 ⓘ 说明对话框。 */
+/** 通用 ⓘ 说明对话框。L-30：可选的 dismissButton 槽（默认无，旧调用点外观不变），
+ * 本地模型行用它放“重新校验”，不改行布局。 */
 @Composable
-fun TermInfoDialog(title: String, body: String, onDismiss: () -> Unit) {
+fun TermInfoDialog(
+    title: String,
+    body: String,
+    onDismiss: () -> Unit,
+    dismissButton: @Composable (() -> Unit)? = null,
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
@@ -113,6 +119,7 @@ fun TermInfoDialog(title: String, body: String, onDismiss: () -> Unit) {
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("知道了") }
         },
+        dismissButton = dismissButton,
     )
 }
 

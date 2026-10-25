@@ -219,6 +219,27 @@ class LocalModelDownloadManager @Inject constructor(
         }
     }
 
+    /**
+     * L-30 手动重新校验：对已下载条目强制重跑一次模板探针（不看旧结论是否
+     * 为空，文件换了、结论丢了都能手动刷新）。只覆盖探针有意义的两类：
+     * 动态条目走 [LocalLlmTemplateProbe.probe]，设探针门的精选条目走
+     * probeCurated；其余条目返回 false（调用方不展示入口）。探针本身在
+     * 单线程探针调度上跑，失败只返回 false，不抛到 UI。
+     */
+    suspend fun revalidateProbe(modelId: String): Boolean = withContext(Dispatchers.IO) {
+        val model = prefs.resolveModel(modelId) ?: return@withContext false
+        when {
+            model.source == CatalogSource.DYNAMIC -> {
+                val entry = dynamicRegistry.entryFor(modelId) ?: return@withContext false
+                runCatching { templateProbe.probe(entry) }.isSuccess
+            }
+            model.requiresProbe -> {
+                runCatching { templateProbe.probeCurated(model, prefs.fileFor(model)) }.isSuccess
+            }
+            else -> false
+        }
+    }
+
     private suspend fun refreshAll() = withContext(Dispatchers.IO) {
         for (model in prefs.resolveAllModels()) {
             val file = prefs.fileFor(model)
