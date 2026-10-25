@@ -167,6 +167,42 @@ class ModelManagementViewModel @Inject constructor(
         }
     }
 
+    /** 单条校验进行中的模型 id（ⓘ 弹窗按钮“校验中…”禁用态用）。 */
+    private val _revalidatingAsrIds = MutableStateFlow<Set<String>>(emptySet())
+    val revalidatingAsrIds: StateFlow<Set<String>> = _revalidatingAsrIds.asStateFlow()
+
+    /**
+     * ⓘ 单条校验：只对已下载行开放（界面层已按 completed 把关），与全部校验同一套
+     * 文件复验；不符文件删掉、该行变回未下载并提示重下，完好则报一句确认。
+     * 全部校验进行中时不单验（防两路并发改同一组状态）。
+     */
+    fun revalidateOneAsr(modelId: String) {
+        if (modelId in _revalidatingAsrIds.value || _revalidatingAsr.value) return
+        viewModelScope.launch {
+            _revalidatingAsrIds.value += modelId
+            try {
+                val name = items.value.firstOrNull { it.model.id == modelId }?.model?.displayName ?: modelId
+                if (downloadManager.states.value[modelId]?.status != ModelDownloadManager.DlStatus.COMPLETED) {
+                    return@launch
+                }
+                val after = downloadManager.refreshOneModel(modelId)
+                when (after?.status) {
+                    ModelDownloadManager.DlStatus.COMPLETED ->
+                        _userMessage.tryEmit("已重新校验 $name，文件完好")
+                    ModelDownloadManager.DlStatus.NOT_DOWNLOADED ->
+                        if (after.error != null) {
+                            _userMessage.tryEmit("已重新校验 $name：文件校验失败，不符文件已删除，请重新下载")
+                        } else {
+                            _userMessage.tryEmit("已重新校验 $name：文件不完整，请重新下载")
+                        }
+                    else -> _userMessage.tryEmit("该模型正在下载，暂不校验")
+                }
+            } finally {
+                _revalidatingAsrIds.value -= modelId
+            }
+        }
+    }
+
     /** 删除整个模型目录。删除已选模型时自动回落，不得选中悬空；无已下载模型时回落空选中。 */
     fun delete(modelId: String) {
         viewModelScope.launch {

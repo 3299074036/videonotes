@@ -444,6 +444,7 @@ private fun AsrTabContent(
     val useCaseFilter by viewModel.useCaseFilter.collectAsStateWithLifecycle()
     val pendingMobile by viewModel.pendingMobileConfirm.collectAsStateWithLifecycle()
     val revalidatingAsr by viewModel.revalidatingAsr.collectAsStateWithLifecycle()
+    val revalidatingAsrIds by viewModel.revalidatingAsrIds.collectAsStateWithLifecycle()
     var showTermDialog by remember { mutableStateOf(false) }
 
     // 保存/恢复后定位：单列已无分组，直接滚动到该行，消费后清空。
@@ -502,6 +503,8 @@ private fun AsrTabContent(
                 onPause = { viewModel.pause(item.model.id) },
                 onDelete = { viewModel.delete(item.model.id) },
                 onSelect = { viewModel.select(item.model.id) },
+                revalidating = item.model.id in revalidatingAsrIds || revalidatingAsr,
+                onRevalidate = { viewModel.revalidateOneAsr(item.model.id) },
                 manageMode = manageMode,
                 onEdit = { onEditEntry(item.entry) },
                 onRemove = { onRemoveEntry(item.entry) },
@@ -554,11 +557,6 @@ private fun AsrTabContent(
             }
         }
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
-        Text(
-            text = "移动网络下载大文件首次会确认。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         TextButton(onClick = { showTermDialog = true }) {
             Text("术语说明 ⓘ")
         }
@@ -707,6 +705,8 @@ private fun AsrModelRow(
     onEdit: () -> Unit = {},
     onRemove: () -> Unit = {},
     rowModifier: Modifier = Modifier,
+    revalidating: Boolean = false,
+    onRevalidate: () -> Unit = {},
 ) {
     val state = item.state
     val completed = state.status == ModelDownloadManager.DlStatus.COMPLETED
@@ -731,6 +731,18 @@ private fun AsrModelRow(
             title = detailTitle,
             body = detailBody,
             onDismiss = { showDetail = false },
+            // ⓘ 单条校验（与语言模型页同款位置）：只对已下载行出现；校验内容是文件
+            // 大小 + SHA256 复验（不是模板探针），不符删文件、行变回未下载，弹窗保持打开、结果走 Toast。
+            dismissButton = if (completed) {
+                {
+                    TextButton(
+                        onClick = onRevalidate,
+                        enabled = !revalidating,
+                    ) { Text(if (revalidating) "校验中…" else "重新校验") }
+                }
+            } else {
+                null
+            },
         )
     }
 

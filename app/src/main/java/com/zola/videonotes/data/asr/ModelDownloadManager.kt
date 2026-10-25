@@ -225,6 +225,17 @@ class ModelDownloadManager @Inject constructor(
         }
     }
 
+    /**
+     * 单模型复验（供 ⓘ 单条校验用）：与全部复验同一套 refreshOne（逐文件大小 + SHA256，
+     * 指纹缓存命中不重算）。下载中的条目跳过，返回 null；其余返回复验后状态。
+     */
+    suspend fun refreshOneModel(modelId: String): ModelDlState? = withContext(Dispatchers.IO) {
+        val model = resolveModel(modelId) ?: return@withContext null
+        if (jobs[modelId]?.isActive == true) return@withContext null
+        refreshOne(model)
+        _states.value[modelId]
+    }
+
     /** 列表移除时丢弃该 id 的下载态（文件是否保留由调用方在此外决定）。 */
     fun forgetState(modelId: String) {
         jobs.remove(modelId)?.cancel()
