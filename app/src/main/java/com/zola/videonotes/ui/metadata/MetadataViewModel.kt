@@ -25,6 +25,8 @@ import com.zola.videonotes.data.parser.ParserRegistry
 import com.zola.videonotes.data.pipeline.GENERATE_CRASH_BREAKER_MESSAGE
 import com.zola.videonotes.data.pipeline.GenerateCrashGuard
 import com.zola.videonotes.data.pipeline.PipelineStartStore
+import com.zola.videonotes.data.player.PlayableStream
+import com.zola.videonotes.data.player.VideoStreamFetcher
 import com.zola.videonotes.data.subtitle.TranscriptRepository
 import com.zola.videonotes.data.work.KEY_ERROR
 import com.zola.videonotes.data.work.KEY_NOTE_ID
@@ -32,6 +34,7 @@ import com.zola.videonotes.data.work.KEY_PROGRESS
 import com.zola.videonotes.data.work.KEY_STAGE
 import com.zola.videonotes.data.work.LongTaskScheduler
 import com.zola.videonotes.domain.asr.AsrModel
+import com.zola.videonotes.domain.model.Platform
 import com.zola.videonotes.domain.model.VideoInfo
 import com.zola.videonotes.domain.model.storageKey
 import com.zola.videonotes.domain.subtitle.SubtitleFetchResult
@@ -108,6 +111,21 @@ sealed interface VideoDownloadUiState {
 
     /** 下载失败：message 为面向用户的中文原因 */
     data class Failed(val message: String) : VideoDownloadUiState
+}
+
+/** 内嵌播放器取流状态（详情页/处理中页顶部播放器共用）。 */
+sealed interface InlinePlayerState {
+    /** 未取流：显示封面 + ▶ */
+    data object Idle : InlinePlayerState
+
+    /** 取流中：显示加载圈（抖音/小红书重解析约 5 秒） */
+    data object Loading : InlinePlayerState
+
+    /** 已取到可播放流：显示 PlayerView */
+    data class Ready(val stream: PlayableStream) : InlinePlayerState
+
+    /** 取流失败：message 为面向用户的中文原因，点重试重新取流 */
+    data class Failed(val message: String) : InlinePlayerState
 }
 
 /** 引导弹层中一侧模型的状态：未选 / 已选未下载。 */
@@ -205,6 +223,7 @@ class MetadataViewModel @Inject constructor(
     private val pipelineStartStore: PipelineStartStore,
     private val crashGuard: GenerateCrashGuard,
     private val videoDownloader: VideoDownloader,
+    private val streamFetcher: VideoStreamFetcher,
     @ApplicationContext private val appContext: Context,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
@@ -227,6 +246,33 @@ class MetadataViewModel @Inject constructor(
 
     private val _downloadState = MutableStateFlow<VideoDownloadUiState>(VideoDownloadUiState.Idle)
     val downloadState: StateFlow<VideoDownloadUiState> = _downloadState.asStateFlow()
+
+    private val _inlinePlayerState = MutableStateFlow<InlinePlayerState>(InlinePlayerState.Idle)
+    val inlinePlayerState: StateFlow<InlinePlayerState> = _inlinePlayerState.asStateFlow()
+
+    /**
+     * 内嵌播放器取流：与二级播放器同路。抖音/小红书播放前重解析取新鲜直链
+     * （解析页的 mediaUrl 可能已过期）；B站/YouTube 直接取流。取流中重复调用直接忽略。
+     */
+    fun loadInlineStream(video: VideoInfo) {
+        if (_inlinePlayerState.value is InlinePlayerState.Loading) return
+        _inlinePlayerState.value = InlinePlayerState.Loading
+        viewModelScope.launch {
+            val playable = if (video.platform == Platform.DOUYIN || video.platform == Platform.XIAOHONGSHU) {
+                parserRegistry.parse(video.sourceUrl).getOrNull()
+            } else {
+                video
+            }
+            if (playable == null) {
+                _inlinePlayerState.value = InlinePlayerState.Failed("该视频暂不支持站内播放，请重新解析")
+                return@launch
+            }
+            streamFetcher.fetch(playable).fold(
+                onSuccess = { _inlinePlayerState.value = InlinePlayerState.Ready(it) },
+                onFailure = { _inlinePlayerState.value = InlinePlayerState.Failed(it.message ?: "视频加载失败，请重试") },
+            )
+        }
+    }
 
     /** 下载当前解析成功的视频（无水印）到系统下载目录。下载中重复点击直接忽略。 */
     fun downloadVideo() {

@@ -2,7 +2,6 @@ package com.zola.videonotes.ui.metadata
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -318,11 +317,8 @@ fun ProcessStepsPage(
     modifier: Modifier = Modifier,
     /** 管线真实启动时刻（持久化记录，来自 ViewModel）；null 时不显示已用时。 */
     pipelineStartMillis: Long? = null,
-    /** 下载状态：非 null 时在视频行下方显示下载入口（解析成功后即可下载无水印视频）。 */
-    downloadState: VideoDownloadUiState? = null,
-    onDownloadClick: () -> Unit = {},
-    /** 点视频行进播放器（与详情页封面预览同路）；不传则行不可点。 */
-    onPlayClick: (() -> Unit)? = null,
+    /** 顶部内容：与详情页完全一致的统一顶部（平台图标 + 标题 / 作者 · 时长 / 本页播放器 / 媒体行）；null 时不显示。 */
+    topContent: (@Composable () -> Unit)? = null,
 ) {
     // 已用时：now − 持久化启动时刻；运行中每秒滚动刷新（重进页面不归零）
     var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -344,123 +340,8 @@ fun ProcessStepsPage(
                 .weight(1f)
                 .verticalScroll(rememberScrollState()),
         ) {
-            Spacer(modifier = Modifier.height(VideoNotesTokens.Space16))
-            // 视频行：封面 + 标题 + 作者 · 平台 · 时长（可点进播放器）
-            if (info != null) {
-                val videoRowModifier = if (onPlayClick != null) {
-                    Modifier.clickable(onClick = onPlayClick)
-                } else {
-                    Modifier
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = videoRowModifier,
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(
-                                width = VideoNotesTokens.CoverThumbWidth,
-                                height = VideoNotesTokens.CoverThumbHeight,
-                            )
-                            .clip(RoundedCornerShape(VideoNotesTokens.CornerSmall))
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = info.title.take(4),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = VideoNotesTokens.Space4),
-                        )
-                        if (info.coverUrl.isNotBlank()) {
-                            AsyncImage(
-                                model = ImageRequest.Builder(LocalContext.current)
-                                    .data(info.coverUrl)
-                                    .crossfade(true)
-                                    .build(),
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.width(VideoNotesTokens.Space12))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = info.title.ifBlank { "（无标题）" },
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Spacer(modifier = Modifier.height(VideoNotesTokens.Space2))
-                        val sub = buildString {
-                            if (info.author.isNotBlank()) append(info.author)
-                            if (isNotEmpty()) append(" · ")
-                            append(info.platform.displayName)
-                            if (info.durationSec > 0) {
-                                append(" · ")
-                                append(formatStepsDuration(info.durationSec))
-                            }
-                        }
-                        Text(
-                            text = sub,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(VideoNotesTokens.Space20))
-            }
-
-            // 下载入口：解析成功后即可下载无水印视频（与转写/生成并行，不阻塞工序单）
-            if (downloadState != null) {
-                when (downloadState) {
-                    is VideoDownloadUiState.Working -> {
-                        OutlinedButton(
-                            onClick = {},
-                            enabled = false,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("正在下载 ${(downloadState.progress * 100).toInt()}%…")
-                        }
-                    }
-                    is VideoDownloadUiState.Done -> {
-                        Text(
-                            text = downloadState.message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                    is VideoDownloadUiState.Failed -> {
-                        OutlinedButton(
-                            onClick = onDownloadClick,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("下载视频（${downloadState.message}，点此重试）")
-                        }
-                    }
-                    VideoDownloadUiState.Idle -> {
-                        OutlinedButton(
-                            onClick = onDownloadClick,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Download,
-                                contentDescription = null,
-                            )
-                            Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
-                            Text("下载视频（无水印）")
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(VideoNotesTokens.Space20))
-            }
+            // 顶部：与详情页完全一致的统一顶部（图标 + 标题 / 作者 · 时长 / 播放器 / 媒体行）
+            topContent?.invoke()
 
             // 总进度：大数字 + 阶段文案
             Row(verticalAlignment = Alignment.Bottom) {
