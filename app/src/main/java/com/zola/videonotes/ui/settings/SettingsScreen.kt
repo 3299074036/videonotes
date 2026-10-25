@@ -55,6 +55,7 @@ fun SettingsScreen(
     onNavigateToModels: (section: String) -> Unit,
     onLicensesClick: () -> Unit,
     onBiliLoginClick: () -> Unit,
+    onXhsLoginClick: () -> Unit,
     onNavigateToOps: () -> Unit,
     onNavigateToPromptEditor: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
@@ -62,6 +63,7 @@ fun SettingsScreen(
     val cacheSizeText by viewModel.cacheSizeText.collectAsStateWithLifecycle()
     val biliLoggedIn by viewModel.biliLoggedIn.collectAsStateWithLifecycle()
     val biliUid by viewModel.biliUid.collectAsStateWithLifecycle()
+    val xhsLoggedIn by viewModel.xhsLoggedIn.collectAsStateWithLifecycle()
     val youtubeImported by viewModel.youtubeImported.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
@@ -80,6 +82,7 @@ fun SettingsScreen(
 
     val snackbarHostState = remember { SnackbarHostState() }
     var showLogoutConfirm by remember { mutableStateOf(false) }
+    var showXhsLogoutConfirm by remember { mutableStateOf(false) }
     var showYoutubeImport by remember { mutableStateOf(false) }
     var showYoutubeClearConfirm by remember { mutableStateOf(false) }
     var youtubeCookieInput by remember { mutableStateOf("") }
@@ -99,6 +102,25 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showLogoutConfirm = false }) { Text("取消") }
+            },
+        )
+    }
+
+    if (showXhsLogoutConfirm) {
+        AlertDialog(
+            onDismissRequest = { showXhsLogoutConfirm = false },
+            title = { Text("退出小红书登录") },
+            text = { Text("将清除本机保存的小红书登录凭证，之后小红书视频将无法解析。确定退出吗？") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showXhsLogoutConfirm = false
+                        viewModel.logoutXhs()
+                    },
+                ) { Text("退出登录") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showXhsLogoutConfirm = false }) { Text("取消") }
             },
         )
     }
@@ -296,6 +318,28 @@ fun SettingsScreen(
                         subtitle = "未登录，登录后可获取需登录的字幕",
                         trailing = {
                             Button(onClick = onBiliLoginClick) {
+                                Text("登录")
+                            }
+                        },
+                    )
+                }
+                SettingsDivider()
+                if (xhsLoggedIn) {
+                    SettingsRow(
+                        title = "小红书账号",
+                        subtitle = "已登录",
+                        trailing = {
+                            TextButton(onClick = { showXhsLogoutConfirm = true }) {
+                                Text("退出登录")
+                            }
+                        },
+                    )
+                } else {
+                    SettingsRow(
+                        title = "小红书账号",
+                        subtitle = "未登录，登录后可解析小红书视频",
+                        trailing = {
+                            Button(onClick = onXhsLoginClick) {
                                 Text("登录")
                             }
                         },

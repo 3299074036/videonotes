@@ -109,6 +109,55 @@ fun BiliLoginScreen(
     }
 }
 
+/** B站登录页协议/按钮重叠的运行时修正脚本（见 onPageFinished 注释）。 */
+private const val BILI_OVERLAP_FIX_JS = """
+(function(){
+  function fix(){
+    try{
+      // 协议文案块的整体矩形：收集含协议关键词的文本节点父元素的并集矩形
+      var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      var node, top = Infinity, bottom = -Infinity, found = false;
+      while(node = walker.nextNode()){
+        var t = node.nodeValue || '';
+        if(t.indexOf('我已阅读并同意') >= 0 || t.indexOf('未注册绑定的手机号') >= 0){
+          var r = node.parentElement.getBoundingClientRect();
+          if(r.bottom > 0){ top = Math.min(top, r.top); bottom = Math.max(bottom, r.bottom); found = true; }
+        }
+      }
+      if(!found) return;
+      // 「登录」按钮：取离协议块底部最近的一个（排除页眉等远处的同名按钮）
+      var best = null, bestDist = Infinity;
+      document.querySelectorAll('button, [role="button"], a').forEach(function(el){
+        var txt = (el.innerText || '').trim();
+        if(txt !== '登录') return;
+        var br = el.getBoundingClientRect();
+        if(br.width === 0 || br.height === 0) return;
+        var d = Math.abs(br.top - bottom);
+        if(d < bestDist){ bestDist = d; best = el; }
+      });
+      if(!best) return;
+      var br = best.getBoundingClientRect();
+      if(br.top < bottom + 8){
+        var shift = Math.ceil(bottom - br.top + 16);
+        var pos = getComputedStyle(best).position;
+        if(pos === 'absolute' || pos === 'fixed'){
+          var cur = parseFloat(getComputedStyle(best).top);
+          best.style.top = ((isNaN(cur) ? br.top : cur) + shift) + 'px';
+        } else {
+          var m = parseFloat(getComputedStyle(best).marginTop) || 0;
+          best.style.marginTop = (m + shift) + 'px';
+        }
+      }
+    }catch(e){}
+  }
+  fix();
+  // 单页应用异步渲染，延迟再修几遍（有界，不常驻）
+  setTimeout(fix, 500);
+  setTimeout(fix, 1500);
+  setTimeout(fix, 3000);
+})();
+"""
+
 /** 初始化登录 WebView：允许 JS / DOM 存储 / Cookie（含第三方 Cookie，登录态写入需要）。 */
 @SuppressLint("SetJavaScriptEnabled")
 private fun WebView.initBiliLoginWebView(
@@ -148,6 +197,11 @@ private fun WebView.initBiliLoginWebView(
             onPageLoadingChanged(false)
             // 让单页应用按最终视口重算一次布局（协议区与登录按钮错位多因此而来）
             view?.evaluateJavascript("window.dispatchEvent(new Event('resize'));", null)
+            // 协议文字与登录按钮重叠的兜底修正：静态查过 B站登录页——视口声明是标准 device-width，
+            // 样式在 JS 包里（CSS 模块/内联样式），靠改 WebView 配置修不动。改用运行时实测实修：
+            // 找到协议文案块与「登录」按钮，实测两者矩形，若重叠就把按钮往下推到不重叠为止。
+            // 按文本找元素（不依赖 B站随时会变的类名）；失败时静默（JS 异常不影响 App）。
+            view?.evaluateJavascript(BILI_OVERLAP_FIX_JS, null)
             // 每次页面加载完检查登录态：B站登录成功后会写入 SESSDATA
             val cookies = CookieManager.getInstance().getCookie(COOKIE_URL)
             onCookiesChanged(cookies)

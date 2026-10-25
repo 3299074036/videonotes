@@ -37,6 +37,7 @@ fun MainScreen(
     onNavigateToModels: (section: String) -> Unit,
     onLicensesClick: () -> Unit,
     onBiliLoginClick: () -> Unit,
+    onXhsLoginClick: () -> Unit,
     onNavigateToOps: () -> Unit,
     onNavigateToPromptEditor: () -> Unit = {},
     startTab: String = MainTab.KNOWLEDGE.route,
@@ -91,6 +92,7 @@ fun MainScreen(
                     onNavigateToModels = onNavigateToModels,
                     onLicensesClick = onLicensesClick,
                     onBiliLoginClick = onBiliLoginClick,
+                    onXhsLoginClick = onXhsLoginClick,
                     onNavigateToOps = onNavigateToOps,
                     onNavigateToPromptEditor = onNavigateToPromptEditor,
                 )

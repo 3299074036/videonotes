@@ -119,10 +119,16 @@ fun PlayerScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            // 下载进度条（下载中才显示）
-            if (downloadState is PlayerDownloadUiState.Working) {
+            // 下载进度条（下载中才显示）。
+            // ★ progress 必须捕获成普通 Float 再传进 lambda：lambda 是惰性求值的，
+            //   状态从 Working 切到 Done 后它还会再跑一次，直接强转 state 必崩
+            //   （ClassCastException: Done cannot be cast to Working）。
+            //   另：downloadState 是委托属性，不能智能转换，先取到局部变量再判断。
+            val state = downloadState
+            if (state is PlayerDownloadUiState.Working) {
+                val progress = state.progress
                 LinearProgressIndicator(
-                    progress = { (downloadState as PlayerDownloadUiState.Working).progress },
+                    progress = { progress },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }

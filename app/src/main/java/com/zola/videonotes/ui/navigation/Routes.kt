@@ -50,6 +50,9 @@ object Routes {
     /** B站登录页：内嵌 B站官方登录页，捕获 SESSDATA 后自动关闭。 */
     const val BILI_LOGIN = "bili_login"
 
+    /** 小红书登录页：内嵌小红书官方登录页，捕获 web_session 经行为探测确认后自动关闭。 */
+    const val XHS_LOGIN = "xhs_login"
+
     /** 统一日志查看页：LLM 日志 / 转写日志，实时查看与导出。 */
     const val LOG_VIEWER = "log_viewer"
 

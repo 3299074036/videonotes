@@ -8,6 +8,7 @@ import com.zola.videonotes.data.asr.AsrModelCatalog
 import com.zola.videonotes.data.asr.AsrPreferences
 import com.zola.videonotes.data.asr.ModelDownloadManager
 import com.zola.videonotes.data.auth.BiliAuthStore
+import com.zola.videonotes.data.auth.XhsAuthStore
 import com.zola.videonotes.data.auth.YoutubeCookieStore
 import com.zola.videonotes.data.llm.LlmCredentialStore
 import com.zola.videonotes.data.llm.LlmEngineResolver
@@ -48,6 +49,7 @@ import kotlin.math.pow
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val biliAuthStore: BiliAuthStore,
+    private val xhsAuthStore: XhsAuthStore,
     private val youtubeCookieStore: YoutubeCookieStore,
     private val llmDownloadManager: LocalModelDownloadManager,
     private val asrDownloadManager: ModelDownloadManager,
@@ -166,6 +168,9 @@ class SettingsViewModel @Inject constructor(
     /** 已登录 B站账号的 UID。 */
     val biliUid: StateFlow<String?> = biliAuthStore.uid
 
+    /** 小红书登录态（登录页保存凭证后自动更新）。 */
+    val xhsLoggedIn: StateFlow<Boolean> = xhsAuthStore.isLoggedIn
+
     /** YouTube cookie 是否已导入。 */
     val youtubeImported: StateFlow<Boolean> = youtubeCookieStore.isImported
 
@@ -219,6 +224,17 @@ class SettingsViewModel @Inject constructor(
             }
             CookieManager.getInstance().removeAllCookies {}
             _message.value = "已退出 B站登录"
+        }
+    }
+
+    /** 退出小红书登录：清本地凭证 + 清 WebView Cookie。 */
+    fun logoutXhs() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                xhsAuthStore.clear()
+            }
+            CookieManager.getInstance().removeAllCookies {}
+            _message.value = "已退出小红书登录"
         }
     }
 

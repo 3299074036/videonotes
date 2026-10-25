@@ -8,9 +8,12 @@ package com.zola.videonotes.data.parser
 internal fun extractFirstUrl(text: String): String? =
     Regex("""https?://[^\s"'<>]+""").find(text)?.value
 
-/** http 封面链接升级为 https，避免明文流量被系统拦截。 */
-internal fun String.ensureHttps(): String =
-    if (startsWith("http://")) "https://" + removePrefix("http://") else this
+/** http 封面链接升级为 https，避免明文流量被系统拦截；`//` 开头的 scheme-relative 链接也补成 https。 */
+internal fun String.ensureHttps(): String = when {
+    startsWith("//") -> "https:$this"
+    startsWith("http://") -> "https://" + removePrefix("http://")
+    else -> this
+}
 
 /**
  * 补全 URL 的 scheme：B站字幕文件 URL 常以 `//` 开头。

@@ -10,6 +10,7 @@ import androidx.navigation.navArgument
 import com.zola.videonotes.data.reader.DeepLinkBuilder
 import com.zola.videonotes.domain.model.Platform
 import com.zola.videonotes.ui.auth.BiliLoginScreen
+import com.zola.videonotes.ui.auth.XhsLoginScreen
 import com.zola.videonotes.ui.importer.ImportScreen
 import com.zola.videonotes.ui.metadata.MetadataScreen
 import com.zola.videonotes.ui.models.ModelManagementScreen
@@ -56,6 +57,7 @@ fun VideoNotesNavGraph(
                 },
                 onLicensesClick = { navController.navigate(Routes.LICENSES) },
                 onBiliLoginClick = { navController.navigate(Routes.BILI_LOGIN) },
+                onXhsLoginClick = { navController.navigate(Routes.XHS_LOGIN) },
                 onNavigateToOps = { navController.navigate(Routes.OPS_DIAGNOSTICS) },
                 onNavigateToPromptEditor = { navController.navigate(Routes.PROMPT_EDITOR) },
             )
@@ -115,6 +117,7 @@ fun VideoNotesNavGraph(
                 },
                 onLicensesClick = { navController.navigate(Routes.LICENSES) },
                 onBiliLoginClick = { navController.navigate(Routes.BILI_LOGIN) },
+                onXhsLoginClick = { navController.navigate(Routes.XHS_LOGIN) },
                 onNavigateToOps = { navController.navigate(Routes.OPS_DIAGNOSTICS) },
                 onNavigateToPromptEditor = { navController.navigate(Routes.PROMPT_EDITOR) },
                 startTab = backStackEntry.arguments?.getString(Routes.ARG_START_TAB)
@@ -123,6 +126,9 @@ fun VideoNotesNavGraph(
         }
         composable(Routes.BILI_LOGIN) {
             BiliLoginScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Routes.XHS_LOGIN) {
+            XhsLoginScreen(onBack = { navController.popBackStack() })
         }
         composable(Routes.LICENSES) {
             LicensesScreen(onBackClick = { navController.popBackStack() })
