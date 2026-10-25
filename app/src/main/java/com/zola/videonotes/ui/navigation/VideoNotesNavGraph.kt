@@ -208,6 +208,8 @@ private fun storageKeyToUrl(storageKey: String): String? {
     return when (platform) {
         Platform.BILIBILI -> "https://www.bilibili.com/video/$videoId"
         Platform.YOUTUBE -> "https://www.youtube.com/watch?v=$videoId"
+        Platform.DOUYIN -> "https://www.douyin.com/video/$videoId"
+        Platform.XIAOHONGSHU -> "https://www.xiaohongshu.com/explore/$videoId"
         else -> null
     }
 }

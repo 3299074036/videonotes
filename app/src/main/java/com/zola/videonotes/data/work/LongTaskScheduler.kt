@@ -12,6 +12,7 @@ import androidx.work.workDataOf
 import com.zola.videonotes.domain.model.Platform
 import com.zola.videonotes.domain.model.VideoInfo
 import com.zola.videonotes.domain.model.storageKey
+import org.json.JSONObject
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
@@ -29,6 +30,8 @@ const val KEY_SOURCE_URL = "sourceUrl"
 const val KEY_COVER_URL = "coverUrl"
 const val KEY_DURATION_SEC = "durationSec"
 const val KEY_AUTHOR = "author"
+const val KEY_MEDIA_URL = "mediaUrl"
+const val KEY_MEDIA_HEADERS = "mediaHeaders"
 
 // ---------- 进度 / 输出键 ----------
 
@@ -47,7 +50,7 @@ const val KEY_NOTE_ID = "noteId"
 /** 失败输出：中文原因 */
 const val KEY_ERROR = "error"
 
-/** VideoInfo → Worker inputData。 */
+/** VideoInfo → Worker inputData。mediaHeaders 序列化为 JSON 字符串（Data 不支持 Map）。 */
 fun VideoInfo.toInputData(): Data = workDataOf(
     KEY_STORAGE_KEY to storageKey(),
     KEY_PLATFORM to platform.name,
@@ -57,6 +60,8 @@ fun VideoInfo.toInputData(): Data = workDataOf(
     KEY_COVER_URL to coverUrl,
     KEY_DURATION_SEC to durationSec,
     KEY_AUTHOR to author,
+    KEY_MEDIA_URL to mediaUrl,
+    KEY_MEDIA_HEADERS to JSONObject(mediaHeaders as Map<*, *>).toString(),
 )
 
 /** Worker inputData → VideoInfo；参数缺失/非法时返回 null。 */
@@ -65,6 +70,14 @@ fun Data.toVideoInfo(): VideoInfo? {
         ?.let { runCatching { Platform.valueOf(it) }.getOrNull() }
         ?: return null
     val videoId = getString(KEY_VIDEO_ID)?.takeIf { it.isNotBlank() } ?: return null
+    val mediaHeaders = getString(KEY_MEDIA_HEADERS)?.let { json ->
+        runCatching {
+            val obj = JSONObject(json)
+            val map = mutableMapOf<String, String>()
+            obj.keys().forEach { key -> map[key] = obj.optString(key) }
+            map
+        }.getOrNull()
+    }.orEmpty()
     return VideoInfo(
         platform = platform,
         videoId = videoId,
@@ -73,6 +86,8 @@ fun Data.toVideoInfo(): VideoInfo? {
         durationSec = getLong(KEY_DURATION_SEC, 0),
         author = getString(KEY_AUTHOR).orEmpty(),
         sourceUrl = getString(KEY_SOURCE_URL).orEmpty(),
+        mediaUrl = getString(KEY_MEDIA_URL).orEmpty(),
+        mediaHeaders = mediaHeaders,
     )
 }
 
