@@ -6,6 +6,12 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// S-03（2026-10-25）：Room schema 导出位置。exportSchema=true 时 KSP 把各版本
+// schema JSON 写到 app/schemas/ 并进 git，升版本写 Migration 与迁移测试以它为准。
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 android {
     namespace = "com.zola.videonotes"
     // compileSdk 36：Coil 3.5.0 的 AAR metadata 要求 >= 36；targetSdk 保持 35 以减少运行时行为变更

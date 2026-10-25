@@ -21,10 +21,11 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase =
+        // S-03（2026-10-25）：删除 fallbackToDestructiveMigration。升版本必须手写 Migration；
+        // 无 Migration 时 Room 会在启动时直接报错（fail-fast），而不是静默清空用户全部数据。
+        // 历史背景：M4 v1→v2 时曾用破坏性迁移，笔记可重生成；但 v4 已含视频表与文稿，
+        // 且小红书旧条目 token 丢失后不可恢复，清库代价已不可接受。
         Room.databaseBuilder(context, AppDatabase::class.java, "videonotes.db")
-            // M4：v1→v2 新增笔记表。M6 前简化处理：破坏性迁移。
-            // 笔记可由文稿重新生成，不视为不可恢复数据。
-            .fallbackToDestructiveMigration()
             .build()
 
     @Provides

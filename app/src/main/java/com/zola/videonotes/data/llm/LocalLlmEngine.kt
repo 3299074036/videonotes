@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.Executors
@@ -82,6 +83,15 @@ class LocalLlmEngine @Inject constructor(
 
     private val lock = Any()
 
+    /**
+     * 生成互斥（S-01/S-02 修复，2026-10-25）：
+     * 本地引擎是单例、单句柄，生成段与探针解码段必须串行。锁覆盖 ensureLoaded→generate
+     * 全程：第二路生成排队等锁（不再共用句柄串 KV），模型切换的 unload 也进不了在途生成；
+     * 探针侧用 tryLock，拿不到即按忙时门禁语义拒绝，不排队。云端引擎是独立类，不受影响。
+     * 注意：Mutex 不可重入，chatStream 与探针内不得嵌套调用对方。
+     */
+    private val generationMutex = Mutex()
+
     /** 诊断专用单线程：probe hang 时只卡住这一个线程，不污染 Default/IO 池。 */
     private val probeDispatcher = Executors.newSingleThreadExecutor { r ->
         Thread(r, "llm-probe").apply { isDaemon = true }
@@ -91,8 +101,8 @@ class LocalLlmEngine @Inject constructor(
      * 生成进行中标志（2026-10-24 探针误伤案后加的忙时门禁）：
      * [chatStream] 进入 native generate 前置 true、退出时复位；[runSingleTokenProbe]
      * 入口见 true 直接拒绝，不碰句柄、不发任何 decode。StateFlow 供诊断页按钮置灰。
-     * 注意：这是建议性门禁（覆盖"生成中点探针"的实测场景），不解决"探针进行中又
-     * 起生成"的反向竞态——探针本身只有 1 个 token、正常亚秒级完成，窗口极小。
+     * 2026-10-25 起“探针进行中又起生成”的反向竞态由 generationMutex 关闭（探针解码段持
+     * tryLock，生成排队等锁）；本标志仍保留，用于诊断页按钮置灰与探针快速拒绝。
      */
     private val _isGenerating = MutableStateFlow(false)
     val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
@@ -146,6 +156,11 @@ class LocalLlmEngine @Inject constructor(
         }
         probeGate(model)?.let { return@withContext Result.failure(it) }
 
+        // S-01/S-02：持生成锁进入 ensureLoaded→generate 全程。锁外已解析 model/file（不碰句柄）；
+        // 排队等待时 lock() 可挂起（Worker 是协程，不占线程）；等待中被取消则 lock() 直接抛
+        // CancellationException，尚未持锁无需释放；块内所有 return@withContext 都会先走 finally 解锁。
+        generationMutex.lock()
+        try {
         // 加载模型（懒加载；切换模型时先 unload）
         val h = try {
             ensureLoaded(file.absolutePath)
@@ -304,6 +319,9 @@ class LocalLlmEngine @Inject constructor(
                 IOException("本地生成失败：${e.message ?: e.javaClass.simpleName}"),
             )
         }
+        } finally {
+            generationMutex.unlock()
+        }
     }
 
     /**
@@ -331,6 +349,14 @@ class LocalLlmEngine @Inject constructor(
                 IOException("本地模型「${model.displayName}」尚未下载，请先到模型管理页下载"),
             )
         }
+        // S-01/S-02：探针解码同样持生成锁。tryLock 拿不到说明有在途生成（或另一探针），
+        // 沿用忙时门禁语义直接拒绝，不排队等（探针 90s 超时，排队等生成结束没有意义）。
+        if (!generationMutex.tryLock()) {
+            val msg = "生成进行中，探针会干扰在途生成，请等待结束"
+            LlmDiagnosticLog.log(context, "llm", "[诊断] 方案A 已拒绝：$msg")
+            return@withContext Result.failure(IOException(msg))
+        }
+        try {
         val h = try {
             ensureLoaded(file.absolutePath)
         } catch (e: CancellationException) {
@@ -369,6 +395,9 @@ class LocalLlmEngine @Inject constructor(
         val verdict = "诊断通过 · ${ms}ms"
         LlmDiagnosticLog.log(context, "llm", "[诊断] 方案A 结论：单 token decode 成功（${ms}ms）")
         Result.success(verdict)
+        } finally {
+            generationMutex.unlock()
+        }
     }
 
     /**
