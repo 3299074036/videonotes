@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -90,6 +91,7 @@ fun MetadataScreen(
     val generateState by viewModel.generateState.collectAsStateWithLifecycle()
     val existingNoteId by viewModel.existingNoteId.collectAsStateWithLifecycle()
     val pipelineState by viewModel.pipelineState.collectAsStateWithLifecycle()
+    val downloadState by viewModel.downloadState.collectAsStateWithLifecycle()
     val effectiveEngineType by viewModel.effectiveEngineType.collectAsStateWithLifecycle()
     // 实时日志流（本地/云端引擎共用 LlmDiagnosticLog.log，自动推送）
     val llmLogLines by LlmDiagnosticLog.logFlow.collectAsStateWithLifecycle()
@@ -358,6 +360,8 @@ fun MetadataScreen(
                                 MetadataHeader(
                                     info = state.info,
                                     onPlayClick = onPlayClick,
+                                    downloadState = downloadState,
+                                    onDownloadClick = viewModel::downloadVideo,
                                 )
                                 CancelledView(
                                     onRestart = viewModel::restartPipeline,
@@ -374,6 +378,8 @@ fun MetadataScreen(
                                 MetadataHeader(
                                     info = state.info,
                                     onPlayClick = onPlayClick,
+                                    downloadState = downloadState,
+                                    onDownloadClick = viewModel::downloadVideo,
                                 )
                                 CompletedNoteView(
                                     noteId = existingNoteId,
@@ -389,6 +395,8 @@ fun MetadataScreen(
                                 stepsUi = stepsUi,
                                 latestLogLine = latestLogLine,
                                 pipelineStartMillis = pipelineStartMillis,
+                                downloadState = downloadState,
+                                onDownloadClick = viewModel::downloadVideo,
                                 onCancel = viewModel::cancelCurrentTask,
                                 onRetryTranscribe = viewModel::onStepRetryTranscribe,
                                 onRetryGenerate = viewModel::onStepRetryGenerate,
@@ -433,6 +441,8 @@ fun MetadataScreen(
 private fun MetadataHeader(
     info: VideoInfo,
     onPlayClick: (storageKey: String, seconds: Long) -> Unit,
+    downloadState: VideoDownloadUiState,
+    onDownloadClick: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
@@ -507,21 +517,61 @@ private fun MetadataHeader(
         }
 
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space16))
-        // M6：站内播放器入口（仅 YouTube / B站有可播放流）
-        if (info.platform == Platform.YOUTUBE || info.platform == Platform.BILIBILI) {
-            OutlinedButton(
-                onClick = { onPlayClick(info.storageKey(), 0L) },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                )
-                Spacer(modifier = Modifier.size(VideoNotesTokens.Space8))
-                Text("播放视频")
-            }
-            Spacer(modifier = Modifier.height(VideoNotesTokens.Space16))
+        // 站内播放器入口：全平台均可播放（抖音/小红书播放时重解析取直链）
+        OutlinedButton(
+            onClick = { onPlayClick(info.storageKey(), 0L) },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.PlayArrow,
+                contentDescription = null,
+            )
+            Spacer(modifier = Modifier.size(VideoNotesTokens.Space8))
+            Text("播放视频")
         }
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
+        // 无水印下载：解析成功后可下载视频到系统下载目录（抖音去水印、B站合成单文件）
+        when (downloadState) {
+            is VideoDownloadUiState.Working -> {
+                OutlinedButton(
+                    onClick = {},
+                    enabled = false,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("正在下载 ${(downloadState.progress * 100).toInt()}%…")
+                }
+            }
+            is VideoDownloadUiState.Done -> {
+                Text(
+                    text = downloadState.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            is VideoDownloadUiState.Failed -> {
+                OutlinedButton(
+                    onClick = onDownloadClick,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("下载视频（${downloadState.message}，点此重试）")
+                }
+            }
+            VideoDownloadUiState.Idle -> {
+                OutlinedButton(
+                    onClick = onDownloadClick,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Download,
+                        contentDescription = null,
+                    )
+                    Spacer(modifier = Modifier.size(VideoNotesTokens.Space8))
+                    Text("下载视频（无水印）")
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space16))
     }
 }
 

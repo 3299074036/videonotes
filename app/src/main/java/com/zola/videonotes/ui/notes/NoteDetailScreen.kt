@@ -152,7 +152,13 @@ fun NoteDetailScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(note?.title ?: "课堂笔记") },
+                title = {
+                    Text(
+                        note?.title ?: "课堂笔记",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
                         Icon(

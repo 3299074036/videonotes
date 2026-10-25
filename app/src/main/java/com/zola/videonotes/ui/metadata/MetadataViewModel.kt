@@ -12,6 +12,7 @@ import com.zola.videonotes.data.asr.ModelDownloadManager
 import com.zola.videonotes.data.catalog.CatalogStore
 import com.zola.videonotes.data.download.MobileDownloadConsent
 import com.zola.videonotes.data.download.NetworkGate
+import com.zola.videonotes.data.download.VideoDownloader
 import com.zola.videonotes.data.llm.LlmEngineResolver
 import com.zola.videonotes.data.llm.LlmEngineType
 import com.zola.videonotes.data.llm.LlmSettings
@@ -92,6 +93,21 @@ sealed interface TranscribeUiState {
 
     /** 转写失败：message 为面向用户的中文原因 */
     data class Failed(val message: String) : TranscribeUiState
+}
+
+/** 视频下载 UI 状态（解析成功后可下载无水印视频到系统下载目录）。 */
+sealed interface VideoDownloadUiState {
+    /** 空闲 */
+    data object Idle : VideoDownloadUiState
+
+    /** 下载中：progress 0f..1f */
+    data class Working(val progress: Float) : VideoDownloadUiState
+
+    /** 下载成功：message 为保存位置提示 */
+    data class Done(val message: String) : VideoDownloadUiState
+
+    /** 下载失败：message 为面向用户的中文原因 */
+    data class Failed(val message: String) : VideoDownloadUiState
 }
 
 /** 引导弹层中一侧模型的状态：未选 / 已选未下载。 */
@@ -188,6 +204,7 @@ class MetadataViewModel @Inject constructor(
     private val videoDao: VideoDao,
     private val pipelineStartStore: PipelineStartStore,
     private val crashGuard: GenerateCrashGuard,
+    private val videoDownloader: VideoDownloader,
     @ApplicationContext private val appContext: Context,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
@@ -207,6 +224,35 @@ class MetadataViewModel @Inject constructor(
 
     private val _transcribeState = MutableStateFlow<TranscribeUiState>(TranscribeUiState.Idle)
     val transcribeState: StateFlow<TranscribeUiState> = _transcribeState.asStateFlow()
+
+    private val _downloadState = MutableStateFlow<VideoDownloadUiState>(VideoDownloadUiState.Idle)
+    val downloadState: StateFlow<VideoDownloadUiState> = _downloadState.asStateFlow()
+
+    /** 下载当前解析成功的视频（无水印）到系统下载目录。下载中重复点击直接忽略。 */
+    fun downloadVideo() {
+        val info = (_uiState.value as? MetadataUiState.Success)?.info ?: return
+        if (_downloadState.value is VideoDownloadUiState.Working) return
+        _downloadState.value = VideoDownloadUiState.Working(0f)
+        viewModelScope.launch {
+            videoDownloader.download(info) { p ->
+                _downloadState.value = VideoDownloadUiState.Working(p)
+            }.fold(
+                onSuccess = {
+                    _downloadState.value = VideoDownloadUiState.Done("已保存到下载/VideoNotes，可在文件管理器中查看")
+                },
+                onFailure = { e ->
+                    _downloadState.value = VideoDownloadUiState.Failed(e.message ?: "视频下载失败")
+                },
+            )
+        }
+    }
+
+    /** 下载提示消费后回到空闲（避免成功/失败文案常驻）。 */
+    fun consumeDownloadState() {
+        if (_downloadState.value !is VideoDownloadUiState.Working) {
+            _downloadState.value = VideoDownloadUiState.Idle
+        }
+    }
 
     private val _generateState = MutableStateFlow<GenerateNoteUiState>(GenerateNoteUiState.Idle)
     val generateState: StateFlow<GenerateNoteUiState> = _generateState.asStateFlow()

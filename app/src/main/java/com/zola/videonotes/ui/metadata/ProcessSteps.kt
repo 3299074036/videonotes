@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -316,6 +317,9 @@ fun ProcessStepsPage(
     modifier: Modifier = Modifier,
     /** 管线真实启动时刻（持久化记录，来自 ViewModel）；null 时不显示已用时。 */
     pipelineStartMillis: Long? = null,
+    /** 下载状态：非 null 时在视频行下方显示下载入口（解析成功后即可下载无水印视频）。 */
+    downloadState: VideoDownloadUiState? = null,
+    onDownloadClick: () -> Unit = {},
 ) {
     // 已用时：now − 持久化启动时刻；运行中每秒滚动刷新（重进页面不归零）
     var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -397,6 +401,51 @@ fun ProcessStepsPage(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
+                    }
+                }
+                Spacer(modifier = Modifier.height(VideoNotesTokens.Space20))
+            }
+
+            // 下载入口：解析成功后即可下载无水印视频（与转写/生成并行，不阻塞工序单）
+            if (downloadState != null) {
+                when (downloadState) {
+                    is VideoDownloadUiState.Working -> {
+                        OutlinedButton(
+                            onClick = {},
+                            enabled = false,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("正在下载 ${(downloadState.progress * 100).toInt()}%…")
+                        }
+                    }
+                    is VideoDownloadUiState.Done -> {
+                        Text(
+                            text = downloadState.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    is VideoDownloadUiState.Failed -> {
+                        OutlinedButton(
+                            onClick = onDownloadClick,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("下载视频（${downloadState.message}，点此重试）")
+                        }
+                    }
+                    VideoDownloadUiState.Idle -> {
+                        OutlinedButton(
+                            onClick = onDownloadClick,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Download,
+                                contentDescription = null,
+                            )
+                            Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
+                            Text("下载视频（无水印）")
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(VideoNotesTokens.Space20))

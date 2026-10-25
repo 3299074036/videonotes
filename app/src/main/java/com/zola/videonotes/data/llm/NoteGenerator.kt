@@ -154,7 +154,9 @@ class NoteGenerator @Inject constructor(
 
         val entity = NoteEntity(
             videoStorageKey = video.storageKey(),
-            title = video.title.ifBlank { "未命名笔记" },
+            // 抖音文案常是几百字日记全文，直接当标题会撑坏详情页布局（TopAppBar + 大标题）；
+            // 取首行、截断到 40 字，完整文案仍保留在 videoTitle 字段里。
+            title = video.title.toNoteTitle(),
             markdown = markdown.trim(),
             createdAt = System.currentTimeMillis(),
             llmModel = engine.modelLabel,
@@ -322,4 +324,14 @@ class NoteGenerator @Inject constructor(
         /** 修正 prompt 中失败时间戳的上下文半径：前后 30 秒。 */
         private const val CONTEXT_MS = 30_000L
     }
+}
+
+/** 笔记标题最大长度（超出截断 + 省略号）。 */
+private const val NOTE_TITLE_MAX_LEN = 40
+
+/** 视频标题 → 笔记标题：取首行、去空白、超长截断（抖音长文案全文当标题会撑坏布局）。 */
+internal fun String.toNoteTitle(): String {
+    val firstLine = lineSequence().firstOrNull()?.trim().orEmpty()
+    if (firstLine.isBlank()) return "未命名笔记"
+    return if (firstLine.length > NOTE_TITLE_MAX_LEN) firstLine.take(NOTE_TITLE_MAX_LEN) + "…" else firstLine
 }
