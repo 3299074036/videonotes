@@ -2,6 +2,7 @@ package com.zola.videonotes.ui.models
 
 import android.widget.Toast
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -274,8 +275,8 @@ private fun CatalogEntryRow(
             // 每行 ⓘ：副行余项（来源档位 · 量化 · 体积 · 内存需求）与描述收进弹窗。
             TermInfoIcon(onClick = { showDetail = true })
             // 管理态：右侧动作位切换为编辑/移除；正常态保持下载/删除两态。
-            // 下载改成与删除同款 TextButton（同字号同内边距），两态右边缘对齐；
-            // 内存不足的下载用禁用态 TextButton（灰色不可点，与原来不可点的灰字同义）。
+            // 下载恢复 153ac3d 的裸 Text（bodyMedium），与删除同槽左对齐，间隙与推荐—ⓘ 一致；
+            // 内存不足的下载恢复原来不可点的灰字（bodyMedium，onSurfaceVariant）。
             Box(
                 modifier = Modifier.width(
                     if (manageMode) ModelRowManageActionSlotWidth else ModelRowActionSlotWidth,
@@ -295,9 +296,20 @@ private fun CatalogEntryRow(
                     when {
                         completed -> TextButton(onClick = { vm.delete(entry.id) }) { Text("删除") }
                         state.status == LocalModelDownloadManager.DlStatus.NOT_DOWNLOADED && !ramBlocked ->
-                            TextButton(onClick = { vm.download(entry.id) }) { Text("下载") }
+                            Text(
+                                text = "下载",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.align(Alignment.CenterStart)
+                                    .clickable { vm.download(entry.id) },
+                            )
                         state.status == LocalModelDownloadManager.DlStatus.NOT_DOWNLOADED && ramBlocked ->
-                            TextButton(onClick = {}, enabled = false) { Text("下载") }
+                            Text(
+                                text = "下载",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.align(Alignment.CenterStart),
+                            )
                     }
                 }
             }

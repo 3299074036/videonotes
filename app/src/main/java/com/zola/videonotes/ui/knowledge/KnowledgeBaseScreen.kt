@@ -42,6 +42,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -294,6 +295,10 @@ fun KnowledgeBaseScreen(
                     modifier = Modifier.onSizeChanged { allChipWidth = it.width },
                 )
                 displayOrder.forEach { f ->
+                    // key(f)：按身份追踪 chip 节点。没有 key 时 Row 按位置复用节点，
+                    // 拖动换位会让原位置节点的 pointerInput(f) 因 key 变化被取消重建，
+                    // 拖动手势在第一次换位后即死亡，onDragEnd 永不触发、顺序永不保存。
+                    key(f) {
                     val isDragging = dragging == f
                     FilterChip(
                         selected = filter == f,
@@ -349,12 +354,16 @@ fun KnowledgeBaseScreen(
                                         dragOffsetX = 0f
                                     },
                                     onDragCancel = {
+                                        // 手势被取消时同样保存当前可见顺序（与松手一致），
+                                        // 避免可见顺序与持久化顺序脱节。
+                                        viewModel.saveFilterOrder(displayOrder)
                                         dragging = null
                                         dragOffsetX = 0f
                                     },
                                 )
                             },
                     )
+                    }
                 }
             }
             Spacer(modifier = Modifier.height(VideoNotesTokens.Space4))

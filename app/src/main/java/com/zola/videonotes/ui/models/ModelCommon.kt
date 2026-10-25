@@ -130,10 +130,13 @@ val ColorDownloaded = androidx.compose.ui.graphics.Color(0xFF1B7A3D)
  * 模型行右侧固定列宽（两页共用）：徽标槽（推荐 / 已下载右对齐，缺失留空）与
  * 动作槽（下载 / 删除右对齐），让所有行的 ⓘ 与动作落在同一竖列上，与名称长短、
  * 徽标有无无关。管理态动作槽放编辑 + 移除两个按钮，故更宽。
+ * 宽度按内容实测收紧：徽标槽 88dp 容纳“推荐 + 已下载 ✓”两项；动作槽 52dp
+ * 容纳删除 TextButton；管理态 108dp 容纳编辑 + 移除。上一版（104/72/116）
+ * 吃掉了名称列宽度，导致 AutoFitName 缩到 12sp 下限仍放不下、名字被裁切。
  */
-val ModelRowBadgeSlotWidth = 104.dp
-val ModelRowActionSlotWidth = 72.dp
-val ModelRowManageActionSlotWidth = 116.dp
+val ModelRowBadgeSlotWidth = 88.dp
+val ModelRowActionSlotWidth = 52.dp
+val ModelRowManageActionSlotWidth = 108.dp
 
 /** 用途筛选 chips 行（纸面 AssistChip，选中态品牌蓝；第二轮修订：单行横向滚动，不得换行）。 */
 @Composable

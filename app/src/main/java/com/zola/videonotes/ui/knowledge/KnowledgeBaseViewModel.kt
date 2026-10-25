@@ -22,11 +22,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 /** 知识库条目：一条视频及其笔记/任务状态的聚合。 */
@@ -123,7 +125,10 @@ class KnowledgeBaseViewModel @Inject constructor(
     /** 拖动排序结束时持久化当前顺序（拖动过程中不写，只在松手时写一次）。 */
     fun saveFilterOrder(order: List<KnowledgeFilter>) {
         viewModelScope.launch {
-            filterPrefs.savePlatformOrder(order.mapNotNull { it.platform })
+            // 写操作不可取消：松手后立即切后台/清 ViewModel 也不应丢写。
+            withContext(NonCancellable) {
+                filterPrefs.savePlatformOrder(order.mapNotNull { it.platform })
+            }
         }
     }
 
