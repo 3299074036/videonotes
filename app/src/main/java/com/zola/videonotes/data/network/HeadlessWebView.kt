@@ -30,6 +30,11 @@ import kotlin.coroutines.resume
  */
 object HeadlessWebView {
 
+    /** 最近一次失败原因（供调用方拼具体错误信息）：NO_ACTIVITY / TIMEOUT / EXTRACT_EMPTY / EXTRACT_NULL。 */
+    @Volatile
+    var lastFailure: String? = null
+        private set
+
     /**
      * 加载页面并提取数据。
      *
@@ -39,7 +44,7 @@ object HeadlessWebView {
      * @param extractJs 提取脚本，返回 JSON 字符串
      * @param timeoutMs 总超时（抖音冷启动约 25 秒，默认 40 秒）
      * @param extraDocumentStartJs 文档开始前注入的脚本（XHR 钩子等）
-     * @return 提取脚本返回的 JSON 字符串，失败/超时/无前台 Activity 时返回 null
+     * @return 提取脚本返回的 JSON 字符串，失败/超时/无前台 Activity 时返回 null（原因见 [lastFailure]）
      */
     suspend fun loadAndExtract(
         url: String,
@@ -49,7 +54,12 @@ object HeadlessWebView {
         timeoutMs: Long = 40_000L,
         extraDocumentStartJs: List<String> = emptyList(),
     ): String? = withContext(Dispatchers.Main.immediate) {
-        val activity = HeadlessWebViewTracker.currentActivity() ?: return@withContext null
+        lastFailure = null
+        val activity = HeadlessWebViewTracker.currentActivity()
+        if (activity == null) {
+            lastFailure = "NO_ACTIVITY"
+            return@withContext null
+        }
         val started = System.currentTimeMillis()
         val webView = WebView(activity)
         // 1×1 + 全透明：满足「必须挂上窗口」，又不占视觉
@@ -80,9 +90,15 @@ object HeadlessWebView {
             while (System.currentTimeMillis() < deadline) {
                 delay(350L)
                 if (webView.evaluate(readyCheckJs) == "true") {
-                    return@withContext webView.evaluate(extractJs)
+                    val extracted = webView.evaluate(extractJs)
+                    if (extracted.isNullOrBlank()) {
+                        lastFailure = "EXTRACT_EMPTY"
+                        return@withContext null
+                    }
+                    return@withContext extracted
                 }
             }
+            lastFailure = "TIMEOUT"
             null
         } finally {
             runCatching { webView.stopLoading() }
