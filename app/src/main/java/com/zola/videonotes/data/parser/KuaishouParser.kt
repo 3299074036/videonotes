@@ -45,7 +45,7 @@ class KuaishouParser @Inject constructor(
             // 入口页（短链 / short-video / f 分享码）先跟随整条跳转链到移动端作品页；
             // 长视频页结构不同，统一改按 /fw/photo/ 请求。
             val pageUrl = expandRedirects(cleanUrl).replace("/fw/long-video/", "/fw/photo/")
-            // L-06：先取链接 id，findPhoto 只认该 id 的 key，不再取首个含 photo 的对象。
+            // L-06：先取链接 id，findPhoto 先认该 id 的 key；认不到且全页仅一个 photo 时兜底用它。
             val linkId = PHOTO_ID_REGEX.find(pageUrl)?.groupValues?.get(1)
             val photo = findPhoto(extractInitState(fetchPage(pageUrl)), linkId)
             val videoUrl = firstUrl(photo.optJSONArray("mainMvUrls"))?.ensureHttps()
@@ -171,15 +171,23 @@ class KuaishouParser @Inject constructor(
     }
 
     /**
-     * INIT_STATE 以作品 id 为 key；L-06：只认链接 id 的 key，无匹配时报错，
-     * 不再取第一个含 photo 的对象（多作品页可能取错视频，且记录的 videoId 与实际媒体不一致）。
+     * INIT_STATE 以作品 id 为 key；L-06：先认链接 id 的 key。认不到时兜底：
+     * 全页仅含一个 photo 对象时用它——单作品页不可能取错视频（本次 /f/ 分享页实测：
+     * 5 个键全是混淆串，唯一 photo 的视频 clientCacheKey 前缀正是链接 id）。
+     * 多作品页仍严格报错，L-06 防取错的初衷不变。不去解混淆串（脆弱，没必要）。
      */
     private fun findPhoto(initState: JSONObject, linkId: String?): JSONObject {
         if (linkId == null) {
             throw IOException("未能从快手链接中识别作品 ID")
         }
-        return initState.optJSONObject(linkId)?.optJSONObject("photo")
-            ?: throw IOException("快手页面数据与链接作品 id 不匹配（INIT_STATE 里没有该作品）")
+        initState.optJSONObject(linkId)?.optJSONObject("photo")?.let { return it }
+        val photos = mutableListOf<JSONObject>()
+        val keys = initState.keys()
+        while (keys.hasNext()) {
+            initState.optJSONObject(keys.next())?.optJSONObject("photo")?.let { photos += it }
+        }
+        if (photos.size == 1) return photos[0]
+        throw IOException("快手页面数据与链接作品 id 不匹配（INIT_STATE 里没有该作品）")
     }
 
     /** 从 CdnUrl 数组里取第一条有 url 的。 */
