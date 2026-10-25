@@ -93,13 +93,32 @@ object Routes {
     /** 播放器页参数：起始秒数（pill 跳转传入）。 */
     const val ARG_START_SECONDS = "startSeconds"
 
+    /**
+     * 播放器页参数：详情页解析好的直链（YunX 模式：解析结果就是播放源，直接播不重解析）。
+     * 仅详情页跳转时传入；笔记页等没有解析结果的入口留空，走原有重解析逻辑。
+     */
+    const val ARG_MEDIA_URL = "mediaUrl"
+
+    /**
+     * 播放器页参数：详情页解析用的原始链接（含小红书 xsec_token 等查询串）。
+     * 直链缺失或过期时用它重解析；留空时退回按 storageKey 重建的地址。
+     */
+    const val ARG_SOURCE_URL = "sourceUrl"
+
     private const val PLAYER_BASE = "player"
 
     /** 播放器页路由模板（M6）：站内播放 + 时间戳跳转。 */
     const val PLAYER_ROUTE =
-        "$PLAYER_BASE?$ARG_STORAGE_KEY={$ARG_STORAGE_KEY}&$ARG_START_SECONDS={$ARG_START_SECONDS}"
+        "$PLAYER_BASE?$ARG_STORAGE_KEY={$ARG_STORAGE_KEY}&$ARG_START_SECONDS={$ARG_START_SECONDS}" +
+            "&$ARG_MEDIA_URL={$ARG_MEDIA_URL}&$ARG_SOURCE_URL={$ARG_SOURCE_URL}"
 
-    /** 构造播放器页路由（存储键做 URI 编码，含冒号）。 */
-    fun player(storageKey: String, startSeconds: Long): String =
-        "$PLAYER_BASE?$ARG_STORAGE_KEY=${Uri.encode(storageKey)}&$ARG_START_SECONDS=$startSeconds"
+    /** 构造播放器页路由（存储键与链接做 URI 编码，含冒号与查询串）。 */
+    fun player(
+        storageKey: String,
+        startSeconds: Long,
+        mediaUrl: String = "",
+        sourceUrl: String = "",
+    ): String =
+        "$PLAYER_BASE?$ARG_STORAGE_KEY=${Uri.encode(storageKey)}&$ARG_START_SECONDS=$startSeconds" +
+            "&$ARG_MEDIA_URL=${Uri.encode(mediaUrl)}&$ARG_SOURCE_URL=${Uri.encode(sourceUrl)}"
 }

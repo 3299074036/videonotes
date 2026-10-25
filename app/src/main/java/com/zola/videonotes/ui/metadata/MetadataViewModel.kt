@@ -251,17 +251,29 @@ class MetadataViewModel @Inject constructor(
     val inlinePlayerState: StateFlow<InlinePlayerState> = _inlinePlayerState.asStateFlow()
 
     /**
-     * 内嵌播放器取流：与二级播放器同路。抖音/小红书播放前重解析取新鲜直链
-     * （解析页的 mediaUrl 可能已过期）；B站/YouTube 直接取流。取流中重复调用直接忽略。
+     * 内嵌播放器取流（YunX 模式：解析结果就是播放源）。
+     * 小红书：直接播详情页解析好的 mediaUrl + mediaHeaders，不重解析——重解析用的
+     * sourceUrl 一旦丢了 xsec_token 就会撞登录墙，而详情页手里的直链本身就是可播的。
+     * 抖音：直链时效短且重解析是通的，仍走重解析；重解析失败时退回已存直链一试。
+     * B站/YouTube 直接取流。取流中重复调用直接忽略。
      */
     fun loadInlineStream(video: VideoInfo) {
         if (_inlinePlayerState.value is InlinePlayerState.Loading) return
         _inlinePlayerState.value = InlinePlayerState.Loading
         viewModelScope.launch {
-            val playable = if (video.platform == Platform.DOUYIN || video.platform == Platform.XIAOHONGSHU) {
-                parserRegistry.parse(video.sourceUrl).getOrNull()
-            } else {
-                video
+            val playable = when (video.platform) {
+                Platform.XIAOHONGSHU -> {
+                    if (video.mediaUrl.isNotBlank()) {
+                        video
+                    } else {
+                        parserRegistry.parse(video.sourceUrl).getOrNull()
+                    }
+                }
+                Platform.DOUYIN -> {
+                    parserRegistry.parse(video.sourceUrl).getOrNull()
+                        ?: video.takeIf { it.mediaUrl.isNotBlank() }
+                }
+                else -> video
             }
             if (playable == null) {
                 _inlinePlayerState.value = InlinePlayerState.Failed("该视频暂不支持站内播放，请重新解析")

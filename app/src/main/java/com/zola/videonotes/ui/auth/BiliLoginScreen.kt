@@ -109,68 +109,6 @@ fun BiliLoginScreen(
     }
 }
 
-/** B站登录页协议/按钮重叠的运行时修正脚本（见 onPageFinished 注释）。 */
-private const val BILI_OVERLAP_FIX_JS = """
-(function(){
-  function fix(){
-    try{
-      // 协议文案块的整体矩形：收集含协议关键词的文本节点父元素的并集矩形
-      var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      var node, top = Infinity, bottom = -Infinity, found = false;
-      while(node = walker.nextNode()){
-        var t = node.nodeValue || '';
-        if(t.indexOf('我已阅读并同意') >= 0 || t.indexOf('未注册绑定的手机号') >= 0){
-          var r = node.parentElement.getBoundingClientRect();
-          if(r.bottom > 0){ top = Math.min(top, r.top); bottom = Math.max(bottom, r.bottom); found = true; }
-        }
-      }
-      if(!found) return;
-      // 「登录」按钮：取离协议块底部最近的一个（排除页眉等远处的同名按钮）。
-      // 按钮可能是 button / a / div（B站移动端表单有用 div 做按钮的情况），且只认最外层
-      // 文本恰为“登录”的元素（内层 span 文本也是“登录”，推它移不动按钮本身）。
-      var best = null, bestDist = Infinity;
-      document.querySelectorAll('button, a, div, span').forEach(function(el){
-        var txt = (el.innerText || '').trim();
-        if(txt !== '登录') return;
-        var p = el.parentElement;
-        if(p && (p.innerText || '').trim() === '登录') return;
-        var br = el.getBoundingClientRect();
-        if(br.width === 0 || br.height === 0) return;
-        var d = Math.abs(br.top - bottom);
-        if(d < bestDist){ bestDist = d; best = el; }
-      });
-      if(!best) return;
-      var br = best.getBoundingClientRect();
-      if(br.top < bottom + 8){
-        var shift = Math.ceil(bottom - br.top + 16);
-        var pos = getComputedStyle(best).position;
-        if(pos === 'absolute' || pos === 'fixed'){
-          var cur = parseFloat(getComputedStyle(best).top);
-          best.style.top = ((isNaN(cur) ? br.top : cur) + shift) + 'px';
-        } else {
-          var m = parseFloat(getComputedStyle(best).marginTop) || 0;
-          best.style.marginTop = (m + shift) + 'px';
-        }
-      }
-    }catch(e){}
-  }
-  fix();
-  // 单页应用会晚渲染、切标签、输手机号时重排版：一次性修必漏。改成 DOM 变化时防抖重修
-  // （fix 本身幂等：推到位后再次测量不再重叠即不再推），WebView 关闭时随页面一起销毁。
-  var timer = null;
-  var obs = new MutationObserver(function(){
-    if(timer) clearTimeout(timer);
-    timer = setTimeout(fix, 300);
-  });
-  obs.observe(document.body, {childList:true, subtree:true, attributes:true, characterData:true});
-  window.addEventListener('resize', function(){ setTimeout(fix, 300); });
-  // 两张截图一张好、一张仍重叠，说明有时序依赖：字体加载这类不改 DOM 的重排，
-  // 监听器捕捉不到。再加两道保险：字体就绪后重修 + 每秒巡检一次（幂等，无重叠时空转）。
-  if(document.fonts && document.fonts.ready){ document.fonts.ready.then(function(){ fix(); }); }
-  setInterval(fix, 1000);
-})();
-"""
-
 /** 初始化登录 WebView：允许 JS / DOM 存储 / Cookie（含第三方 Cookie，登录态写入需要）。 */
 @SuppressLint("SetJavaScriptEnabled")
 private fun WebView.initBiliLoginWebView(
@@ -188,8 +126,6 @@ private fun WebView.initBiliLoginWebView(
     settings.databaseEnabled = true
     settings.mediaPlaybackRequiresUserGesture = false
     settings.cacheMode = WebSettings.LOAD_DEFAULT
-    // 登录页协议文字与登录按钮重叠的修法：B站登录页是 Vue 单页应用，按钮位置按布局量出；
-    // 系统字体放大时协议文字多换行会撑出定高容器、压到按钮上，且页面量布局的时机可能早于视口稳定。
     // textZoom=100 让页内字体不受系统字体缩放影响；加载完派发 resize 让 SPA 重算一次布局。
     settings.textZoom = 100
     // B站登录页是按移动端视口排版的 H5，不开这两个会导致元素错位重叠
@@ -210,11 +146,6 @@ private fun WebView.initBiliLoginWebView(
             onPageLoadingChanged(false)
             // 让单页应用按最终视口重算一次布局（协议区与登录按钮错位多因此而来）
             view?.evaluateJavascript("window.dispatchEvent(new Event('resize'));", null)
-            // 协议文字与登录按钮重叠的兜底修正：静态查过 B站登录页——视口声明是标准 device-width，
-            // 样式在 JS 包里（CSS 模块/内联样式），靠改 WebView 配置修不动。改用运行时实测实修：
-            // 找到协议文案块与「登录」按钮，实测两者矩形，若重叠就把按钮往下推到不重叠为止。
-            // 按文本找元素（不依赖 B站随时会变的类名）；失败时静默（JS 异常不影响 App）。
-            view?.evaluateJavascript(BILI_OVERLAP_FIX_JS, null)
             // 每次页面加载完检查登录态：B站登录成功后会写入 SESSDATA
             val cookies = CookieManager.getInstance().getCookie(COOKIE_URL)
             onCookiesChanged(cookies)

@@ -94,8 +94,8 @@ fun VideoNotesNavGraph(
                 onViewNoteClick = { noteId ->
                     navController.navigate(Routes.noteDetail(noteId))
                 },
-                onPlayClick = { storageKey, seconds ->
-                    navController.navigate(Routes.player(storageKey, seconds))
+                onPlayClick = { storageKey, seconds, mediaUrl, sourceUrl ->
+                    navController.navigate(Routes.player(storageKey, seconds, mediaUrl, sourceUrl))
                 },
             )
         }
@@ -199,6 +199,14 @@ fun VideoNotesNavGraph(
                 navArgument(Routes.ARG_START_SECONDS) {
                     type = NavType.LongType
                     defaultValue = 0L
+                },
+                navArgument(Routes.ARG_MEDIA_URL) {
+                    type = NavType.StringType
+                    defaultValue = ""
+                },
+                navArgument(Routes.ARG_SOURCE_URL) {
+                    type = NavType.StringType
+                    defaultValue = ""
                 },
             ),
         ) {

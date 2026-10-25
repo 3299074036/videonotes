@@ -88,7 +88,7 @@ fun MetadataScreen(
     onNavigateToModels: (section: String) -> Unit,
     onNavigateToSettings: () -> Unit,
     onViewNoteClick: (Long) -> Unit,
-    onPlayClick: (storageKey: String, seconds: Long) -> Unit,
+    onPlayClick: (storageKey: String, seconds: Long, mediaUrl: String, sourceUrl: String) -> Unit,
     viewModel: MetadataViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -368,7 +368,7 @@ fun MetadataScreen(
                                     info = state.info,
                                     inlineState = inlinePlayerState,
                                     onInlinePlayRequest = { viewModel.loadInlineStream(state.info) },
-                                    onExpandClick = { onPlayClick(state.info.storageKey(), 0L) },
+                                    onExpandClick = { onPlayClick(state.info.storageKey(), 0L, state.info.mediaUrl, state.info.sourceUrl) },
                                     downloadState = downloadState,
                                     onDownloadClick = viewModel::downloadVideo,
                                 )
@@ -388,7 +388,7 @@ fun MetadataScreen(
                                     info = state.info,
                                     inlineState = inlinePlayerState,
                                     onInlinePlayRequest = { viewModel.loadInlineStream(state.info) },
-                                    onExpandClick = { onPlayClick(state.info.storageKey(), 0L) },
+                                    onExpandClick = { onPlayClick(state.info.storageKey(), 0L, state.info.mediaUrl, state.info.sourceUrl) },
                                     downloadState = downloadState,
                                     onDownloadClick = viewModel::downloadVideo,
                                 )
@@ -412,7 +412,7 @@ fun MetadataScreen(
                                             info = state.info,
                                             inlineState = inlinePlayerState,
                                             onInlinePlayRequest = { viewModel.loadInlineStream(state.info) },
-                                            onExpandClick = { onPlayClick(state.info.storageKey(), 0L) },
+                                            onExpandClick = { onPlayClick(state.info.storageKey(), 0L, state.info.mediaUrl, state.info.sourceUrl) },
                                             downloadState = downloadState,
                                             onDownloadClick = viewModel::downloadVideo,
                                         )

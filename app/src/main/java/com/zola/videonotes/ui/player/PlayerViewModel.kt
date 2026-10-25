@@ -3,6 +3,7 @@ package com.zola.videonotes.ui.player
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.zola.videonotes.data.auth.XhsAuthStore
 import com.zola.videonotes.data.download.VideoDownloader
 import com.zola.videonotes.data.parser.ParserRegistry
 import com.zola.videonotes.data.player.PlayableStream
@@ -48,22 +49,30 @@ sealed interface PlayerDownloadUiState {
 /**
  * 播放器页 ViewModel（M6）。
  *
- * 从路由参数取 storageKey（格式 "${platform.name}:${videoId}"）重建 VideoInfo，
- * 经 [VideoStreamFetcher] 取可播放直链。YouTube 的 sourceUrl 按标准 watch 链接重建，
- * B站直接用 videoId（extractBiliIds 只看 videoId）。
- * 抖音/小红书：解析器已拿到的直链不会持久化到 storageKey 里，播放时按 sourceUrl
- * 重新解析一次取新鲜直链（抖音直链有时效，重解析比缓存更可靠）。
+ * 取流优先级（YunX 模式：解析结果就是播放源）：
+ * 1. 详情页带过来的 mediaUrl（小红书）：直接播，不重解析。请求头不走导航（Cookie 不进
+ *    路由参数），播放时按 [XhsAuthStore] 现取桌面 UA + Referer + web_session。
+ * 2. 详情页带过来的 sourceUrl（含小红书 xsec_token）：重解析一次取新鲜直链。
+ * 3. 兜底：按 storageKey 重建的地址重解析（抖音可用；小红书无 token 会撞登录墙）。
+ * YouTube 的 sourceUrl 按标准 watch 链接重建，B站直接用 videoId。
  */
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
     private val streamFetcher: VideoStreamFetcher,
     private val parserRegistry: ParserRegistry,
     private val videoDownloader: VideoDownloader,
+    private val xhsAuthStore: XhsAuthStore,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
     /** 视频存储键。 */
     val storageKey: String = savedStateHandle.get<String>(Routes.ARG_STORAGE_KEY).orEmpty()
+
+    /** 详情页解析好的直链（可能为空：笔记页等入口不带）。 */
+    private val mediaUrlArg: String = savedStateHandle.get<String>(Routes.ARG_MEDIA_URL).orEmpty()
+
+    /** 详情页解析用的原始链接（含查询串；可能为空）。 */
+    private val sourceUrlArg: String = savedStateHandle.get<String>(Routes.ARG_SOURCE_URL).orEmpty()
 
     /** 起始秒数（pill 跳转传入）。 */
     val startSeconds: Long = savedStateHandle.get<Long>(Routes.ARG_START_SECONDS) ?: 0L
@@ -114,9 +123,18 @@ class PlayerViewModel @Inject constructor(
                 _uiState.value = PlayerUiState.Failed("视频信息无效")
                 return@launch
             }
-            // 抖音/小红书：storageKey 里没有直链，播放前重新解析取新鲜直链
+            // 小红书 + 详情页带了直链：直接播（YunX 模式），不重解析。
+            if (video.platform == Platform.XIAOHONGSHU && mediaUrlArg.isNotBlank()) {
+                _uiState.value = PlayerUiState.Ready(
+                    PlayableStream(url = mediaUrlArg, headers = xhsMediaHeaders()),
+                )
+                return@launch
+            }
+            // 抖音/小红书：播放前重新解析取新鲜直链；优先用详情页带过来的原始链接
+            // （含 xsec_token），其次才用 storageKey 重建的地址。
             val playableVideo = if (video.platform == Platform.DOUYIN || video.platform == Platform.XIAOHONGSHU) {
-                parserRegistry.parse(video.sourceUrl).getOrNull() ?: run {
+                val parseUrl = sourceUrlArg.ifBlank { video.sourceUrl }
+                parserRegistry.parse(parseUrl).getOrNull() ?: run {
                     _uiState.value = PlayerUiState.Failed("该视频暂不支持站内播放，请重新解析")
                     return@launch
                 }
@@ -127,6 +145,16 @@ class PlayerViewModel @Inject constructor(
                 .onSuccess { _uiState.value = PlayerUiState.Ready(it) }
                 .onFailure { _uiState.value = PlayerUiState.Failed(it.message ?: "视频加载失败，请重试") }
         }
+    }
+
+    /**
+     * 小红书播放请求头（YunX：缺 Referer/Cookie 就 403）。
+     * Cookie 从凭证库现取，不经导航参数传递。
+     */
+    private fun xhsMediaHeaders(): Map<String, String> = buildMap {
+        put("User-Agent", XhsAuthStore.XHS_DESKTOP_UA)
+        put("Referer", "https://www.xiaohongshu.com/")
+        xhsAuthStore.webSession()?.let { put("Cookie", "web_session=$it") }
     }
 
     private fun buildVideoInfo(storageKey: String): VideoInfo? {
@@ -145,7 +173,10 @@ class PlayerViewModel @Inject constructor(
             coverUrl = "",
             durationSec = 0,
             author = "",
-            sourceUrl = sourceUrl,
+            // 详情页带过来的原始链接优先（小红书含 xsec_token），下载与重解析都用它。
+            sourceUrl = sourceUrlArg.ifBlank { sourceUrl },
+            mediaUrl = mediaUrlArg,
+            mediaHeaders = if (platform == Platform.XIAOHONGSHU) xhsMediaHeaders() else emptyMap(),
         )
     }
 }
