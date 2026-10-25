@@ -164,6 +164,10 @@ private const val BILI_OVERLAP_FIX_JS = """
   });
   obs.observe(document.body, {childList:true, subtree:true, attributes:true, characterData:true});
   window.addEventListener('resize', function(){ setTimeout(fix, 300); });
+  // 两张截图一张好、一张仍重叠，说明有时序依赖：字体加载这类不改 DOM 的重排，
+  // 监听器捕捉不到。再加两道保险：字体就绪后重修 + 每秒巡检一次（幂等，无重叠时空转）。
+  if(document.fonts && document.fonts.ready){ document.fonts.ready.then(function(){ fix(); }); }
+  setInterval(fix, 1000);
 })();
 """
 

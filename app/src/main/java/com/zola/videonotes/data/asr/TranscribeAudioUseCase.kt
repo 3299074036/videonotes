@@ -3,6 +3,7 @@ package com.zola.videonotes.data.asr
 import com.zola.videonotes.data.asr.audio.BilibiliAudioFetcher
 import com.zola.videonotes.data.asr.audio.DouyinAudioFetcher
 import com.zola.videonotes.data.asr.audio.PcmDecoder
+import com.zola.videonotes.data.asr.audio.XhsAudioFetcher
 import com.zola.videonotes.data.asr.audio.YoutubeAudioFetcher
 import com.zola.videonotes.data.asr.engine.SherpaAsrEngine
 import com.zola.videonotes.data.local.TranscriptSegmentDao
@@ -70,6 +71,7 @@ class TranscribeAudioUseCase @Inject constructor(
     private val youtubeAudioFetcher: YoutubeAudioFetcher,
     private val bilibiliAudioFetcher: BilibiliAudioFetcher,
     private val douyinAudioFetcher: DouyinAudioFetcher,
+    private val xhsAudioFetcher: XhsAudioFetcher,
     private val decoder: PcmDecoder,
     private val engine: SherpaAsrEngine,
     private val prefs: AsrPreferences,
@@ -92,6 +94,7 @@ class TranscribeAudioUseCase @Inject constructor(
                 Platform.YOUTUBE -> youtubeAudioFetcher
                 Platform.BILIBILI -> bilibiliAudioFetcher
                 Platform.DOUYIN -> douyinAudioFetcher
+                Platform.XIAOHONGSHU -> xhsAudioFetcher
                 else -> throw IOException("${video.platform.displayName}暂不支持语音转写")
             }
 

@@ -54,13 +54,13 @@ class XiaohongshuParser @Inject constructor(
             val cookie = authStore.webSession()?.let { "web_session=$it" }.orEmpty()
 
             // 先 explore；要求登录时直接抛（不再试 discovery，同一道门）
-            val exploreResult = runCatching { parseExplore(noteId, query, cookie) }
+            val exploreResult = runCatching { parseExplore(noteId, query, cookie, finalUrl) }
             exploreResult.getOrNull()?.let { return Result.success(it) }
             val exploreError = exploreResult.exceptionOrNull()
             if (exploreError is XhsLoginRequiredException) throw exploreError
 
             // 再 discovery
-            val discoveryResult = runCatching { parseDiscovery(noteId, query, cookie) }
+            val discoveryResult = runCatching { parseDiscovery(noteId, query, cookie, finalUrl) }
             discoveryResult.getOrNull()?.let { return Result.success(it) }
             throw discoveryResult.exceptionOrNull()
                 ?: exploreError
@@ -73,7 +73,7 @@ class XiaohongshuParser @Inject constructor(
     }
 
     /** explore 形态：`/explore/<id>?<原查询串>`（桌面 UA）。 */
-    private suspend fun parseExplore(noteId: String, query: String, cookie: String): VideoInfo {
+    private suspend fun parseExplore(noteId: String, query: String, cookie: String, sourceUrl: String): VideoInfo {
         val html = fetchPage(
             url = "$XHS_HOME/explore/$noteId$query",
             headers = exploreHeaders(cookie),
@@ -90,11 +90,12 @@ class XiaohongshuParser @Inject constructor(
             cookie = cookie,
             authorKey = "nickname",
             coverUrls = imageUrls(note.optJSONArray("imageList")) { it.str("urlDefault").ifBlank { it.str("url") } },
+            sourceUrl = sourceUrl,
         )
     }
 
     /** discovery 形态：`/discovery/item/<id>?<原查询串>`（iOS UA + XHR 头）。 */
-    private suspend fun parseDiscovery(noteId: String, query: String, cookie: String): VideoInfo {
+    private suspend fun parseDiscovery(noteId: String, query: String, cookie: String, sourceUrl: String): VideoInfo {
         val html = fetchPage(
             url = "$XHS_HOME/discovery/item/$noteId$query",
             headers = discoveryHeaders(cookie),
@@ -114,6 +115,7 @@ class XiaohongshuParser @Inject constructor(
             cookie = cookie,
             authorKey = "nickName",
             coverUrls = preloadCover.ifEmpty { rawCover },
+            sourceUrl = sourceUrl,
         )
     }
 
@@ -195,6 +197,7 @@ class XiaohongshuParser @Inject constructor(
         cookie: String,
         authorKey: String,
         coverUrls: List<String>,
+        sourceUrl: String,
     ): VideoInfo {
         val videoObj = note.optJSONObject("video")
             ?: throw IOException("小红书图文笔记暂不支持转写，仅支持视频笔记")
@@ -210,7 +213,9 @@ class XiaohongshuParser @Inject constructor(
             coverUrl = cover.ensureHttps(),
             durationSec = 0,
             author = author,
-            sourceUrl = "$XHS_HOME/explore/$noteId",
+            // ★ 必须存原始完整链接（含 xsec_token）：内联/二级播放器对小红书会用 sourceUrl
+            //   重解析取新鲜直链，token 一丢就会撞登录墙、重解析失败（播不了的根因）。
+            sourceUrl = sourceUrl,
             mediaUrl = stream.url.ensureHttps(),
             mediaHeaders = mediaHeaders(cookie),
         )
