@@ -443,6 +443,7 @@ private fun AsrTabContent(
     val context = LocalContext.current
     val useCaseFilter by viewModel.useCaseFilter.collectAsStateWithLifecycle()
     val pendingMobile by viewModel.pendingMobileConfirm.collectAsStateWithLifecycle()
+    val revalidatingAsr by viewModel.revalidatingAsr.collectAsStateWithLifecycle()
     var showTermDialog by remember { mutableStateOf(false) }
 
     // 保存/恢复后定位：单列已无分组，直接滚动到该行，消费后清空。
@@ -541,15 +542,20 @@ private fun AsrTabContent(
             ) {
                 Text("＋ 新增模型")
             }
+            // 全部校验（与语言模型页同款；无已下载模型时禁用，校验中禁用防重复点）
+            Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
+            OutlinedButton(
+                onClick = { viewModel.revalidateAllAsr() },
+                enabled = !revalidatingAsr &&
+                    browseList.ordered.any { it.state.status == ModelDownloadManager.DlStatus.COMPLETED },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (revalidatingAsr) "校验中…" else "重新校验全部已下载模型")
+            }
         }
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
         Text(
             text = "移动网络下载大文件首次会确认。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = "注：除中文主力档外，其余模型的时间戳落点尚未逐项真机验证。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

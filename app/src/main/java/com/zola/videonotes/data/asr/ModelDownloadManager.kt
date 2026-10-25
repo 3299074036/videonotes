@@ -214,13 +214,14 @@ class ModelDownloadManager @Inject constructor(
 
     /** 用户改动后重算生效列表的下载态（进行中的下载不碰；恢复添加后找回已保留文件）。 */
     fun refreshUserModels() {
-        appScope.launch {
-            withContext(Dispatchers.IO) {
-                for (model in effectiveModels()) {
-                    if (jobs[model.id]?.isActive == true) continue
-                    refreshOne(model)
-                }
-            }
+        appScope.launch { refreshUserModelsNow() }
+    }
+
+    /** 同上、可等待完成版：供手动“重新校验全部”按钮用（校验中禁用态 + 跑完给回执）。 */
+    suspend fun refreshUserModelsNow() = withContext(Dispatchers.IO) {
+        for (model in effectiveModels()) {
+            if (jobs[model.id]?.isActive == true) continue
+            refreshOne(model)
         }
     }
 

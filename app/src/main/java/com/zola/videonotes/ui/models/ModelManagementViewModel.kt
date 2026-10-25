@@ -125,6 +125,48 @@ class ModelManagementViewModel @Inject constructor(
     private val _userMessage = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val userMessage: SharedFlow<String> = _userMessage.asSharedFlow()
 
+    /** 手动“重新校验全部”进行中（按钮校验中禁用态用）。 */
+    private val _revalidatingAsr = MutableStateFlow(false)
+    val revalidatingAsr: StateFlow<Boolean> = _revalidatingAsr.asStateFlow()
+
+    /**
+     * 手动重新校验全部已下载识别模型：逐文件复验大小 + SHA256（与启动时
+     * 全量复验同一套 refreshOne；指纹缓存命中时不重算哈希）。下载中的条目
+     * 跳过。跑完按前后状态给回执：不符文件已被 refreshOne 删除并置错误，
+     * 该行变回未下载；语言模型页的 X/Y 计数口径这里没有（入口本身不计数），
+     * 故回执只报完好数与需重下数，不硬凑探针数。
+     */
+    fun revalidateAllAsr() {
+        if (_revalidatingAsr.value) return
+        viewModelScope.launch {
+            _revalidatingAsr.value = true
+            try {
+                val before = downloadManager.states.value.values
+                    .filter { it.status == ModelDownloadManager.DlStatus.COMPLETED }
+                    .map { it.modelId }
+                    .toSet()
+                if (before.isEmpty()) {
+                    _userMessage.tryEmit("没有可校验的已下载模型")
+                    return@launch
+                }
+                downloadManager.refreshUserModelsNow()
+                val after = downloadManager.states.value
+                val failed = before.filter { id ->
+                    after[id]?.status != ModelDownloadManager.DlStatus.COMPLETED
+                }
+                val ok = before.size - failed.size
+                if (failed.isEmpty()) {
+                    _userMessage.tryEmit("已重新校验 ${before.size} 个模型，文件全部完好")
+                } else {
+                    val deletedNote = if (failed.any { after[it]?.error != null }) "（不符文件已删除）" else ""
+                    _userMessage.tryEmit("已重新校验：$ok 个完好，${failed.size} 个需重新下载$deletedNote")
+                }
+            } finally {
+                _revalidatingAsr.value = false
+            }
+        }
+    }
+
     /** 删除整个模型目录。删除已选模型时自动回落，不得选中悬空；无已下载模型时回落空选中。 */
     fun delete(modelId: String) {
         viewModelScope.launch {
