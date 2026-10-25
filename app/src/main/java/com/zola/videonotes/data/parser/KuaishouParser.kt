@@ -41,9 +41,9 @@ class KuaishouParser @Inject constructor(
     override suspend fun parse(url: String): Result<VideoInfo> {
         return try {
             val cleanUrl = extractFirstUrl(url) ?: url.trim()
-            // 入口页（短链 / short-video / f 分享码）必须先跳转到移动端作品页；
+            // 入口页（短链 / short-video / f 分享码）先跟随整条跳转链到移动端作品页；
             // 长视频页结构不同，统一改按 /fw/photo/ 请求。
-            val pageUrl = expandOnce(cleanUrl).replace("/fw/long-video/", "/fw/photo/")
+            val pageUrl = expandRedirects(cleanUrl).replace("/fw/long-video/", "/fw/photo/")
             val photo = findPhoto(extractInitState(fetchPage(pageUrl)))
             val videoUrl = firstUrl(photo.optJSONArray("mainMvUrls"))?.ensureHttps()
             if (videoUrl.isNullOrBlank()) {
@@ -81,23 +81,28 @@ class KuaishouParser @Inject constructor(
     }
 
     /**
-     * 单次不跟随展开：读 Location（相对路径按当前地址解析）；拿不到则返回原地址。
-     * 展开请求同样带 iOS UA + Referer，否则快手可能不给跳转目标。
+     * 跟随重定向链：逐跳读 Location（相对路径按当前地址解析），直到拿到非跳转响应
+     * 或 Location 为空。/f/ 分享码要跳两跳（f → short-video → fw/photo），只展开一跳
+     * 会停在中间页，导致取不到 /fw/photo/<id>；而 photo JSON 里没有 id 字段兜底。
+     * 最多跟 5 跳防循环；每跳都带 iOS UA + Referer，否则快手可能不给跳转目标。
      */
-    private suspend fun expandOnce(startUrl: String): String = withContext(Dispatchers.IO) {
+    private suspend fun expandRedirects(startUrl: String): String = withContext(Dispatchers.IO) {
         val noRedirect = client.newBuilder()
             .followRedirects(false)
             .followSslRedirects(false)
             .build()
-        val url = if (startUrl.startsWith("http")) startUrl else "https://$startUrl"
-        val request = Request.Builder().url(url).apply {
-            mediaHeaders().forEach { (k, v) -> header(k, v) }
-        }.get().build()
-        noRedirect.newCall(request).execute().use { response ->
-            val location = response.header("Location")?.takeIf { it.isNotBlank() }
+        var url = if (startUrl.startsWith("http")) startUrl else "https://$startUrl"
+        repeat(5) {
+            val request = Request.Builder().url(url).apply {
+                mediaHeaders().forEach { (k, v) -> header(k, v) }
+            }.get().build()
+            val location = noRedirect.newCall(request).execute().use { response ->
+                response.header("Location")?.takeIf { it.isNotBlank() }
+            } ?: return@withContext url
+            url = url.toHttpUrlOrNull()?.resolve(location)?.toString()
                 ?: return@withContext url
-            url.toHttpUrlOrNull()?.resolve(location)?.toString() ?: url
         }
+        url
     }
 
     private suspend fun fetchPage(pageUrl: String): String = withContext(Dispatchers.IO) {
@@ -190,7 +195,7 @@ class KuaishouParser @Inject constructor(
         /** 快手直链必须带此 Referer，否则 403。 */
         const val REFERER = "https://v.kuaishou.com/"
 
-        private val KUAISHOU_HOSTS = listOf("kuaishou.com", "chenzhongtech.com")
+        private val KUAISHOU_HOSTS = listOf("kuaishou.com", "chenzhongtech.com", "gifshow.com")
 
         private val PHOTO_ID_REGEX = Regex("""/fw/photo/([A-Za-z0-9]+)""")
 
