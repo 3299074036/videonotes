@@ -62,10 +62,15 @@ data class KnowledgeEntry(
         }
 }
 
-/** 筛选 chips。 */
-enum class KnowledgeFilter {
-    // 2026-10-24 合并包顺序：全部、转写中、生成中、有笔记（筛选逻辑按值匹配，不受顺序影响）
-    ALL, TRANSCRIBING, GENERATING, HAS_NOTE
+/** 筛选 chips：平台分组（设计稿：全部 + 6 个平台，选某平台只显示该平台条目）。 */
+enum class KnowledgeFilter(val platform: Platform?) {
+    ALL(null),
+    BILIBILI(Platform.BILIBILI),
+    YOUTUBE(Platform.YOUTUBE),
+    DOUYIN(Platform.DOUYIN),
+    XIAOHONGSHU(Platform.XIAOHONGSHU),
+    KUAISHOU(Platform.KUAISHOU),
+    WEIBO(Platform.WEIBO),
 }
 
 /**
@@ -147,12 +152,7 @@ class KnowledgeBaseViewModel @Inject constructor(
                 e.title.contains(q, ignoreCase = true) ||
                 e.author.contains(q, ignoreCase = true) ||
                 e.noteTitle.contains(q, ignoreCase = true)
-            val matchFilter = when (f) {
-                KnowledgeFilter.ALL -> true
-                KnowledgeFilter.HAS_NOTE -> e.noteId != null
-                KnowledgeFilter.GENERATING -> e.isGenerating
-                KnowledgeFilter.TRANSCRIBING -> e.isTranscribing
-            }
+            val matchFilter = f.platform == null || e.platform == f.platform
             matchQuery && matchFilter
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())

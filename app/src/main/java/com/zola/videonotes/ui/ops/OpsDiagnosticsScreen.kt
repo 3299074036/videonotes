@@ -1,5 +1,6 @@
 package com.zola.videonotes.ui.ops
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -93,8 +95,10 @@ fun OpsDiagnosticsScreen(
             SectionTitle("LLM 诊断")
             Card(
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    containerColor = MaterialTheme.colorScheme.surface,
                 ),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
@@ -106,14 +110,14 @@ fun OpsDiagnosticsScreen(
                         Icon(
                             imageVector = Icons.Filled.Speed,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "单 token 诊断",
                                 style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                color = MaterialTheme.colorScheme.onSurface,
                             )
                         }
                         IconButton(onClick = {
@@ -124,7 +128,7 @@ fun OpsDiagnosticsScreen(
                             Icon(
                                 imageVector = Icons.Outlined.Info,
                                 contentDescription = "单 token 诊断说明",
-                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         Button(
@@ -139,12 +143,12 @@ fun OpsDiagnosticsScreen(
                         Text(
                             text = "本地生成进行中，单 token 诊断已禁用（探针与生成共用上下文，会干扰在途生成）",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                     HorizontalDivider(
-                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.2f),
+                        color = MaterialTheme.colorScheme.outlineVariant,
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     // 最小化 native 测试
@@ -155,14 +159,14 @@ fun OpsDiagnosticsScreen(
                         Icon(
                             imageVector = Icons.Filled.Science,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "最小化 native 测试",
                                 style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                color = MaterialTheme.colorScheme.onSurface,
                             )
                         }
                         IconButton(onClick = {
@@ -172,7 +176,7 @@ fun OpsDiagnosticsScreen(
                             Icon(
                                 imageVector = Icons.Outlined.Info,
                                 contentDescription = "最小化 native 测试说明",
-                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         Button(
@@ -184,7 +188,7 @@ fun OpsDiagnosticsScreen(
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                     HorizontalDivider(
-                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.2f),
+                        color = MaterialTheme.colorScheme.outlineVariant,
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     // 线程诊断（方案 T）：独立上下文，不破坏在途生成，但会争 CPU/内存
@@ -195,14 +199,14 @@ fun OpsDiagnosticsScreen(
                         Icon(
                             imageVector = Icons.Filled.Memory,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "线程诊断",
                                 style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                color = MaterialTheme.colorScheme.onSurface,
                             )
                         }
                         IconButton(onClick = {
@@ -212,7 +216,7 @@ fun OpsDiagnosticsScreen(
                             Icon(
                                 imageVector = Icons.Outlined.Info,
                                 contentDescription = "线程诊断说明",
-                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         Button(
@@ -231,7 +235,7 @@ fun OpsDiagnosticsScreen(
                             Text(
                                 text = "诊断中…（单项最长 90s，线程诊断全程约 3–5 分钟）",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
@@ -244,7 +248,7 @@ fun OpsDiagnosticsScreen(
                             Text(
                                 text = lines[0],
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                color = MaterialTheme.colorScheme.onSurface,
                             )
                         } else {
                             // 最小化测试：表格样式
@@ -339,7 +343,14 @@ fun OpsDiagnosticsScreen(
 
             // ---------- 设备信息 ----------
             SectionTitle("设备信息")
-            Card(modifier = Modifier.fillMaxWidth()) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
                 Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                     viewModel.deviceInfo.forEachIndexed { index, (k, v) ->
                         Row(

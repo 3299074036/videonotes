@@ -2,6 +2,7 @@ package com.zola.videonotes.ui.knowledge
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -57,7 +59,7 @@ import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import com.zola.videonotes.ui.components.EmptyView
-import com.zola.videonotes.ui.components.PlatformBadge
+import com.zola.videonotes.ui.components.PlatformIcon
 import com.zola.videonotes.ui.theme.VideoNotesTokens
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -241,10 +243,13 @@ fun KnowledgeBaseScreen(
                     .padding(horizontal = VideoNotesTokens.Space16),
             )
             Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
-            // 筛选 chips
+            // 筛选 chips：平台分组（设计稿：全部 + 6 个平台小图标 chip，横向滚动）
             Row(
                 horizontalArrangement = Arrangement.spacedBy(VideoNotesTokens.Space8),
-                modifier = Modifier.padding(horizontal = VideoNotesTokens.Space16),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = VideoNotesTokens.Space16),
             ) {
                 KnowledgeFilter.entries.forEach { f ->
                     FilterChip(
@@ -254,11 +259,13 @@ fun KnowledgeBaseScreen(
                             Text(
                                 when (f) {
                                     KnowledgeFilter.ALL -> "全部"
-                                    KnowledgeFilter.HAS_NOTE -> "有笔记"
-                                    KnowledgeFilter.GENERATING -> "生成中"
-                                    KnowledgeFilter.TRANSCRIBING -> "转写中"
+                                    KnowledgeFilter.BILIBILI -> "哔哩哔哩"
+                                    else -> f.platform?.displayName.orEmpty()
                                 },
                             )
+                        },
+                        leadingIcon = f.platform?.let { platform ->
+                            { PlatformIcon(platform = platform, size = 17.dp) }
                         },
                     )
                 }
@@ -356,8 +363,8 @@ private fun KnowledgeEntryRow(
             Spacer(modifier = Modifier.height(VideoNotesTokens.Space4))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 entry.platform?.let {
-                    PlatformBadge(platform = it)
-                    Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
+                    PlatformIcon(platform = it, size = 16.dp)
+                    Spacer(modifier = Modifier.width(6.dp))
                 }
                 val meta = buildString {
                     if (entry.author.isNotBlank()) append(entry.author)

@@ -1,6 +1,7 @@
 package com.zola.videonotes.ui.settings
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -8,10 +9,22 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -32,12 +45,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.zola.videonotes.data.llm.LlmEngineType
 import com.zola.videonotes.data.theme.ThemeMode
+import com.zola.videonotes.domain.model.Platform
 import com.zola.videonotes.ui.components.PaperSegmentedRow
+import com.zola.videonotes.ui.components.PlatformIcon
 import com.zola.videonotes.ui.navigation.Routes
 import com.zola.videonotes.ui.theme.VideoNotesTokens
 
@@ -236,6 +254,13 @@ fun SettingsScreen(
                         .fillMaxWidth()
                         .padding(vertical = VideoNotesTokens.Space12),
                 ) {
+                    Box(
+                        modifier = Modifier.size(28.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        SettingsLinearIcon(Icons.Filled.Memory)
+                    }
+                    Spacer(modifier = Modifier.width(VideoNotesTokens.Space12))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "生成引擎",
@@ -270,6 +295,7 @@ fun SettingsScreen(
                         title = "大语言模型",
                         subtitle = localModelText.ifBlank { "读取中…" },
                         onClick = { onNavigateToModels(Routes.SECTION_LLM_LOCAL) },
+                        leading = { SettingsLinearIcon(Icons.Filled.Chat) },
                         trailing = { SettingsChevron() },
                     )
                 } else {
@@ -277,6 +303,7 @@ fun SettingsScreen(
                         title = "云端 API",
                         subtitle = cloudApiText.ifBlank { "读取中…" },
                         onClick = { onNavigateToModels(Routes.SECTION_LLM_CLOUD) },
+                        leading = { SettingsLinearIcon(Icons.Filled.Cloud) },
                         trailing = { SettingsChevron() },
                     )
                 }
@@ -286,6 +313,7 @@ fun SettingsScreen(
                     title = "笔记提示词",
                     subtitle = promptOverrideText.ifBlank { "读取中…" },
                     onClick = onNavigateToPromptEditor,
+                    leading = { SettingsLinearIcon(Icons.Filled.Edit) },
                     trailing = { SettingsChevron() },
                 )
             }
@@ -296,6 +324,7 @@ fun SettingsScreen(
                     title = "识别模型",
                     subtitle = asrModelText.ifBlank { "读取中…" },
                     onClick = { onNavigateToModels(Routes.SECTION_ASR) },
+                    leading = { SettingsLinearIcon(Icons.Filled.Mic) },
                     trailing = { SettingsChevron() },
                 )
             }
@@ -306,6 +335,7 @@ fun SettingsScreen(
                     SettingsRow(
                         title = "B站账号",
                         subtitle = if (biliUid != null) "已登录（UID $biliUid）" else "已登录",
+                        leading = { PlatformIcon(platform = Platform.BILIBILI, size = 28.dp) },
                         trailing = {
                             TextButton(onClick = { showLogoutConfirm = true }) {
                                 Text("退出登录")
@@ -316,6 +346,7 @@ fun SettingsScreen(
                     SettingsRow(
                         title = "B站账号",
                         subtitle = "未登录，登录后可获取需登录的字幕",
+                        leading = { PlatformIcon(platform = Platform.BILIBILI, size = 28.dp) },
                         trailing = {
                             Button(onClick = onBiliLoginClick) {
                                 Text("登录")
@@ -328,6 +359,7 @@ fun SettingsScreen(
                     SettingsRow(
                         title = "小红书账号",
                         subtitle = "已登录",
+                        leading = { PlatformIcon(platform = Platform.XIAOHONGSHU, size = 28.dp) },
                         trailing = {
                             TextButton(onClick = { showXhsLogoutConfirm = true }) {
                                 Text("退出登录")
@@ -338,6 +370,7 @@ fun SettingsScreen(
                     SettingsRow(
                         title = "小红书账号",
                         subtitle = "未登录，登录后可解析小红书视频",
+                        leading = { PlatformIcon(platform = Platform.XIAOHONGSHU, size = 28.dp) },
                         trailing = {
                             Button(onClick = onXhsLoginClick) {
                                 Text("登录")
@@ -353,12 +386,14 @@ fun SettingsScreen(
                         youtubeCookieInput = ""
                         showYoutubeImport = true
                     },
+                    leading = { PlatformIcon(platform = Platform.YOUTUBE, size = 28.dp) },
                     trailing = { SettingsChevron() },
                 )
                 SettingsDivider()
                 SettingsRow(
                     title = "缓存清理",
                     subtitle = "音频 / 图片等临时文件，共 $cacheSizeText",
+                    leading = { SettingsLinearIcon(Icons.Filled.Delete) },
                     trailing = {
                         TextButton(onClick = { viewModel.clearAudioCache() }) {
                             Text("清理", color = MaterialTheme.colorScheme.error)
@@ -375,16 +410,27 @@ fun SettingsScreen(
                         .fillMaxWidth()
                         .padding(vertical = VideoNotesTokens.Space12),
                 ) {
-                    Text(
-                        text = "主题",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = "纸上课堂浅色 / 夜纸深色 / 纯黑",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier.size(28.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            SettingsLinearIcon(Icons.Filled.Palette)
+                        }
+                        Spacer(modifier = Modifier.width(VideoNotesTokens.Space12))
+                        Column {
+                            Text(
+                                text = "主题",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = "纸上课堂浅色 / 夜纸深色 / 纯黑",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
                     val themeOptions = listOf(
                         ThemeMode.SYSTEM to "跟随系统",
@@ -406,6 +452,7 @@ fun SettingsScreen(
                     title = "运维诊断",
                     subtitle = "LLM 诊断、日志与设备信息",
                     onClick = onNavigateToOps,
+                    leading = { SettingsLinearIcon(Icons.Filled.Speed) },
                     trailing = { SettingsChevron() },
                 )
                 SettingsDivider()
@@ -413,11 +460,13 @@ fun SettingsScreen(
                     title = "开源许可",
                     subtitle = "第三方组件及其许可证列表",
                     onClick = onLicensesClick,
+                    leading = { SettingsLinearIcon(Icons.Filled.MenuBook) },
                     trailing = { SettingsChevron() },
                 )
                 SettingsDivider()
                 SettingsRow(
                     title = "版本",
+                    leading = { SettingsLinearIcon(Icons.Filled.Info) },
                     trailing = {
                         Text(
                             text = versionName,
@@ -449,12 +498,13 @@ private fun SettingsGroup(
     content()
 }
 
-/** 纸面行：标题 + 副文案（左）与状态值 / 箭头 / 开关（右），无图标。 */
+/** 纸面行：左侧可选图标 + 标题 + 副文案（左）与状态值 / 箭头 / 开关（右）。 */
 @Composable
 private fun SettingsRow(
     title: String,
     subtitle: String? = null,
     onClick: (() -> Unit)? = null,
+    leading: (@Composable () -> Unit)? = null,
     trailing: @Composable () -> Unit = {},
 ) {
     Row(
@@ -464,6 +514,15 @@ private fun SettingsRow(
             .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
             .padding(vertical = VideoNotesTokens.Space12),
     ) {
+        if (leading != null) {
+            Box(
+                modifier = Modifier.size(28.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                leading()
+            }
+            Spacer(modifier = Modifier.width(VideoNotesTokens.Space12))
+        }
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
@@ -480,6 +539,17 @@ private fun SettingsRow(
         }
         trailing()
     }
+}
+
+/** 设置页功能行线性图标（设计稿：23dp，钢蓝色）。 */
+@Composable
+private fun SettingsLinearIcon(imageVector: ImageVector) {
+    Icon(
+        imageVector = imageVector,
+        contentDescription = null,
+        tint = Color(0xFF4A6FA5),
+        modifier = Modifier.size(23.dp),
+    )
 }
 
 /** 行间发丝线。 */
