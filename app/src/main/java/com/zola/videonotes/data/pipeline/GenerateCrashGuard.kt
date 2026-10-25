@@ -36,16 +36,25 @@ class GenerateCrashGuard @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
 
-    /** storageKey → 偏好键名：清洗非法字符 + 附哈希后缀防清洗后碰撞（与 PipelineStartStore 同法）。 */
-    private fun suffix(storageKey: String) =
+    /** storageKey → 键后缀：SHA-256 全长摘要（与 PipelineStartStore 同法）。 */
+    private fun suffix(storageKey: String) = "sha_" + sha256Hex(storageKey)
+
+    /** 旧后缀（升级前公式）：清理时一并处理，旧键此后不再写入。 */
+    private fun oldSuffix(storageKey: String) =
         storageKey.replace(Regex("[^A-Za-z0-9]"), "_") +
             "_" + storageKey.hashCode().toUInt().toString(16)
 
     private fun inProgressKey(storageKey: String) =
         booleanPreferencesKey("gen_inprog_${suffix(storageKey)}")
 
+    private fun oldInProgressKey(storageKey: String) =
+        booleanPreferencesKey("gen_inprog_${oldSuffix(storageKey)}")
+
     private fun deathsKey(storageKey: String) =
         intPreferencesKey("gen_deaths_${suffix(storageKey)}")
+
+    private fun oldDeathsKey(storageKey: String) =
+        intPreferencesKey("gen_deaths_${oldSuffix(storageKey)}")
 
     /**
      * Worker 启动时登记：若上次的 inProgress 标记仍在（= 上次进程死在生成
@@ -58,10 +67,12 @@ class GenerateCrashGuard @Inject constructor(
             val ik = inProgressKey(storageKey)
             val dk = deathsKey(storageKey)
             deaths = prefs[dk] ?: 0
-            if (prefs[ik] == true) {
+            // L-23：升级前残留的旧标记也算死亡证据（跨版本不丢熔断计数），读到即清。
+            if (prefs[ik] == true || prefs[oldInProgressKey(storageKey)] == true) {
                 deaths += 1
                 prefs[dk] = deaths
                 prefs.remove(ik)
+                prefs.remove(oldInProgressKey(storageKey))
             }
         }
         return deaths
@@ -74,26 +85,31 @@ class GenerateCrashGuard @Inject constructor(
         }
     }
 
-    /** generate() 已正常返回（失败/取消等已处理落点）：只清标记，不动计数。 */
+    /** generate() 已正常返回（失败/取消等已处理落点）：只清标记，不动计数；旧键一并清。 */
     suspend fun clearInProgress(storageKey: String) {
         context.pipelineDataStore.edit { prefs ->
             prefs.remove(inProgressKey(storageKey))
+            prefs.remove(oldInProgressKey(storageKey))
         }
     }
 
-    /** 一次生成正常成功：清标记并把连续死亡计数清零。 */
+    /** 一次生成正常成功：清标记并把连续死亡计数清零；旧键一并清。 */
     suspend fun onGenerateSuccess(storageKey: String) {
         context.pipelineDataStore.edit { prefs ->
             prefs.remove(inProgressKey(storageKey))
             prefs.remove(deathsKey(storageKey))
+            prefs.remove(oldInProgressKey(storageKey))
+            prefs.remove(oldDeathsKey(storageKey))
         }
     }
 
-    /** 用户手动重试：清零计数与标记，人工重试永远允许（熔断只拦自动复活）。 */
+    /** 用户手动重试：清零计数与标记，人工重试永远允许（熔断只拦自动复活）；旧键一并清。 */
     suspend fun reset(storageKey: String) {
         context.pipelineDataStore.edit { prefs ->
             prefs.remove(inProgressKey(storageKey))
             prefs.remove(deathsKey(storageKey))
+            prefs.remove(oldInProgressKey(storageKey))
+            prefs.remove(oldDeathsKey(storageKey))
         }
     }
 

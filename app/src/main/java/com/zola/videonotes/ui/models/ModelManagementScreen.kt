@@ -592,8 +592,16 @@ private fun CloudConfigSection(
             label = { Text("接口地址 base_url") },
             placeholder = { Text(LlmPresets.DEFAULT_BASE_URL) },
             singleLine = true,
+            isError = state.baseUrlError != null,
             modifier = Modifier.fillMaxWidth(),
         )
+        state.baseUrlError?.let { err ->
+            Text(
+                text = err,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
         Row(horizontalArrangement = Arrangement.spacedBy(VideoNotesTokens.Space8)) {
             LlmPresets.ALL.forEach { preset ->

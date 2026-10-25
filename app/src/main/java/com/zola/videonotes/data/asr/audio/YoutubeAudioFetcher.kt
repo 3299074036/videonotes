@@ -27,7 +27,9 @@ private const val AUDIO_UA =
  */
 @Singleton
 class YoutubeAudioFetcher @Inject constructor(
-    private val okHttpClient: OkHttpClient,
+    // M-16：同 VideoDownloader，走无 callTimeout 的 download 客户端。
+    // 音频直链自带 UA/Referer 请求头，不依赖默认客户端的 YouTube Cookie 拦截器。
+    @javax.inject.Named("download") private val okHttpClient: OkHttpClient,
     private val newPipeSetup: NewPipeSetup,
     @ApplicationContext private val context: Context,
 ) : AudioFetcher {
@@ -48,7 +50,7 @@ class YoutubeAudioFetcher @Inject constructor(
             }
             val dest = File(
                 File(context.cacheDir, "audio"),
-                "${video.platform.name}_${video.videoId}.m4a",
+                "${video.platform.name}_${video.videoId.replace(Regex("[^A-Za-z0-9._-]"), "_")}.m4a",
             )
             if (dest.exists() && dest.length() > 0) {
                 onProgress(1f)
@@ -66,6 +68,9 @@ class YoutubeAudioFetcher @Inject constructor(
             Result.success(dest)
         } catch (e: IOException) {
             Result.failure(e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
+            throw e
         } catch (t: Throwable) {
             Result.failure(IOException("YouTube 音频获取失败：${t.message ?: t.javaClass.simpleName}"))
         }

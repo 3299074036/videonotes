@@ -93,6 +93,9 @@ class VideoStreamFetcher @Inject constructor(
             Result.success(PlayableStream(best.url, mapOf("User-Agent" to PLAYER_UA)))
         } catch (e: IOException) {
             Result.failure(e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
+            throw e
         } catch (t: Throwable) {
             Result.failure(IOException("视频流获取失败：${t.message ?: t.javaClass.simpleName}"))
         }
@@ -126,6 +129,9 @@ class VideoStreamFetcher @Inject constructor(
             )
         } catch (e: IOException) {
             Result.failure(e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
+            throw e
         } catch (t: Throwable) {
             Result.failure(IOException("视频流获取失败：${t.message ?: t.javaClass.simpleName}"))
         }

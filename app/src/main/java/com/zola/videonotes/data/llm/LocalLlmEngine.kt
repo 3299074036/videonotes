@@ -288,6 +288,18 @@ class LocalLlmEngine @Inject constructor(
             // drain 都不会执行，导出日志里至少能看到「已进入 generate」这一行，
             // 与面包屑文件里的信号 + 里程碑互为印证。
             LlmDiagnosticLog.log(context, "llm", "generate 开始（进入 native 生成）")
+            // M-03：看门狗。超时不取消协程（拦不住 JNI），只通知 native 停机并记旗标；
+            // native 返回后凭旗标转明示失败。用户取消仍走既有 invokeOnCompletion 路径。
+            val timedOut = java.util.concurrent.atomic.AtomicBoolean(false)
+            val watchdog = launch {
+                delay(LOCAL_GENERATE_TIMEOUT_MS)
+                timedOut.set(true)
+                LlmDiagnosticLog.log(
+                    context, "llm",
+                    "生成超时（${LOCAL_GENERATE_TIMEOUT_MS / 60000}分钟），通知 native 停机",
+                )
+                runCatching { LlamaCpp.requestCancel(h) }
+            }
             val rc = try {
                 // 忙时门禁：进入 generate 前置标志，探针入口见此标志直接拒绝
                 _isGenerating.value = true
@@ -295,6 +307,7 @@ class LocalLlmEngine @Inject constructor(
             } finally {
                 _isGenerating.value = false
                 progressPoller.cancel()
+                watchdog.cancel()
             }
             val totalMs = SystemClock.elapsedRealtime() - t0
             // native 侧性能汇总（含 tokenize/prefill/decode 的 token 数与 tok/s），失败时也有部分数据
@@ -312,6 +325,12 @@ class LocalLlmEngine @Inject constructor(
             // 把 generate 阶段的 JNI 日志（prefill batch 进度 / llama.cpp 内部日志 / ret=）落盘
             drainJniLogsToFile()
             ensureActive()
+            // M-03：看门狗触发的停机转明示失败（用户取消已由上行 ensureActive 抛 CancellationException）。
+            if (timedOut.get()) {
+                return@withContext Result.failure(
+                    IOException("本地生成超时（${LOCAL_GENERATE_TIMEOUT_MS / 60000}分钟），已取消；若反复出现请换更小的模型或缩短文稿"),
+                )
+            }
             if (rc != 0) {
                 return@withContext Result.failure(IOException(LlamaCpp.lastError()))
             }
@@ -436,6 +455,17 @@ class LocalLlmEngine @Inject constructor(
             context, "llm",
             "[诊断] 方案C：最小化 native 测试开始（5 个用例，每用例 ${PROBE_TIMEOUT_MS / 1000}s 超时）…",
         )
+        // L-35：最小化探针同样收进生成互斥（与方案 A 同款忙时拒绝语义）。
+        // 它独立加载模型、不碰常驻句柄，生成正确性不受影响；但与在途生成共用
+        // JNI 全局诊断 buffer（g_last_error / g_jni_log_buffer），并发时诊断串台
+        // （探针的 drain 会取走生成的日志、失败时 lastError 可能取到另一路的）。
+        // tryLock 拿不到即拒绝，不排队；Mutex 不可重入，探针内不得再调生成。
+        if (!generationMutex.tryLock()) {
+            val msg = "生成进行中，诊断会干扰在途生成，请等待结束"
+            LlmDiagnosticLog.log(context, "llm", "[诊断] 方案C 已拒绝：$msg")
+            return@withContext Result.failure(IOException(msg))
+        }
+        try {
         data class Case(
             val threads: Int,
             val nCtx: Int,
@@ -489,6 +519,9 @@ class LocalLlmEngine @Inject constructor(
         val verdict = sb.toString().trim()
         LlmDiagnosticLog.log(context, "llm", "[诊断] 方案C 汇总：\n$verdict")
         Result.success(verdict)
+        } finally {
+            generationMutex.unlock()
+        }
     }
 
     /**
@@ -502,7 +535,8 @@ class LocalLlmEngine @Inject constructor(
      * 4 / 6 / 8 线程 + 4 线程绑大核下各跑一批，逐用例记线程数/token 数/耗时/
      * 成败码（JNI cprobe 行含 tok/s，面包屑里程碑同步记录）。
      * 注意：每用例 90s 超时；4 线程一批约 60s，超时本身也是数据（记为 hang）。
-     * 全程约 3–5 分钟；生成进行中运行只会争 CPU/内存拖慢生成，不破坏生成。
+     * L-35：生成进行中时本诊断直接拒绝（与方案 A 同款忙时门禁）：它虽独立加载
+     * 模型、不破坏生成，但与在途生成共用 JNI 全局诊断 buffer，并发会串台诊断。
      * 生产线程数已按模型体积改为分档（见 threadsForModelSize），本入口保留供日后复验。
      */
     suspend fun runThreadSweepProbe(): Result<String> = withContext(probeDispatcher) {
@@ -519,6 +553,13 @@ class LocalLlmEngine @Inject constructor(
             context, "llm",
             "[诊断] 方案T：线程诊断开始（512 token/批、ctx8192，4/6/8 线程 + 4 线程绑大核，每用例 ${PROBE_TIMEOUT_MS / 1000}s 超时，全程约 3–5 分钟）…",
         )
+        // L-35：与方案 C 同理收进生成互斥（共用 minimalProbe 与 JNI 全局诊断 buffer）。
+        if (!generationMutex.tryLock()) {
+            val msg = "生成进行中，诊断会干扰在途生成，请等待结束"
+            LlmDiagnosticLog.log(context, "llm", "[诊断] 方案T 已拒绝：$msg")
+            return@withContext Result.failure(IOException(msg))
+        }
+        try {
         data class Case(
             val threads: Int,
             val pinBigCores: Int,
@@ -569,6 +610,9 @@ class LocalLlmEngine @Inject constructor(
         val verdict = sb.toString().trim()
         LlmDiagnosticLog.log(context, "llm", "[诊断] 方案T 汇总：\n$verdict")
         Result.success(verdict)
+        } finally {
+            generationMutex.unlock()
+        }
     }
 
     /**
@@ -597,16 +641,17 @@ class LocalLlmEngine @Inject constructor(
                 handle = 0L
                 loadedPath = null
             }
-            // 先校验文件完整性：大小与预期差 5% 以上视为下载不完整，直接报清楚，
+            // 先校验文件完整性：大小与预期差 5% 以上视为文件异常，
             // 避免加载损坏文件导致难以定位的 native 失败。
             val file = java.io.File(path)
             val expected = prefs.expectedSizeForPath(path)
             if (expected != null && expected > 0) {
                 val actual = file.length()
-                // 允许 5% 误差（HF 上文件大小可能有微小出入）
-                if (actual < expected * 0.95) {
+                // M-09：双向 ±5%（HF 上文件大小可能有微小出入；单向下限曾放过超大异常文件）。
+                if (actual < expected * 0.95 || actual > expected * 1.05) {
+                    val problem = if (actual < expected) "不完整" else "异常过大"
                     throw IOException(
-                        "模型文件不完整（实际 ${actual / 1_000_000}MB，预期约 ${expected / 1_000_000}MB），" +
+                        "模型文件$problem（实际 ${actual / 1_000_000}MB，预期约 ${expected / 1_000_000}MB），" +
                             "请到设置页删除后重新下载",
                     )
                 }
@@ -706,5 +751,13 @@ class LocalLlmEngine @Inject constructor(
 
         /** 方案 A 诊断超时：90s。1 token 的 decode 正常应在秒级完成。 */
         const val PROBE_TIMEOUT_MS = 90_000L
+
+        /**
+         * M-03：生产生成总超时：30 分钟。正常生成（prefill + 3000 token 输出）在
+         * 手机上应为分钟级；超过即判定 native hang。实现用看门狗而非 withTimeout：
+         * withTimeout 拦不住阻塞式 JNI 调用（无挂起点，超时异常要等 native 返回才送达），
+         * 看门狗到时直接通知 native 停机，native 返回后凭 timedOut 转明示失败。
+         */
+        const val LOCAL_GENERATE_TIMEOUT_MS = 30 * 60 * 1000L
     }
 }

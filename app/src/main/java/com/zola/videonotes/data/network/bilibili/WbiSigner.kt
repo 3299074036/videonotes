@@ -23,16 +23,16 @@ object WbiSigner {
 
     /**
      * 从 nav 接口的 img_url / sub_url 中提取 img_key / sub_key（文件名去扩展名）。
-     * 任一为空时返回 null。
+     * 任一为空、或两 key 总长不足 64 时返回 null（L-05：mixin 表最大下标 63，
+     * 总长不足时 getMixinKey 会越界；调用方已把 null 转为“密钥解析失败”）。
      */
     fun parseKeys(imgUrl: String, subUrl: String): Pair<String, String>? {
         val imgKey = fileNameNoExt(imgUrl)
         val subKey = fileNameNoExt(subUrl)
-        return if (imgKey.isNullOrEmpty() || subKey.isNullOrEmpty()) {
-            null
-        } else {
-            imgKey to subKey
+        if (imgKey.isNullOrEmpty() || subKey.isNullOrEmpty() || imgKey.length + subKey.length < 64) {
+            return null
         }
+        return imgKey to subKey
     }
 
     private fun fileNameNoExt(url: String): String? {

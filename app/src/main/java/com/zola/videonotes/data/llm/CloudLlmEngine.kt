@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.SystemClock
 import android.util.Log
 import com.zola.videonotes.data.llm.local.LlmDiagnosticLog
+import com.zola.videonotes.data.catalog.isLoopbackUrl
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.IOException
 import java.util.Locale
@@ -63,6 +64,10 @@ class CloudLlmEngine @Inject constructor(
         val apiKey = withContext(Dispatchers.IO) { credentialStore.getApiKey() }.orEmpty()
         if (baseUrl.isBlank() || model.isBlank() || apiKey.isBlank()) {
             return Result.failure(IOException("请先到设置页配置大语言模型"))
+        }
+        // M-08：历史已存的 http 地址同样不能拿 Key 去调（保存态拦截管不到存量）。
+        if (baseUrl.trim().startsWith("http://") && !isLoopbackUrl(baseUrl.trim())) {
+            return Result.failure(IOException("云端地址须为 https（http 明文会泄露 API Key），请到设置页修改"))
         }
         // 只记 host：完整 URL 可能含路径与查询参数，不进日志
         val host = runCatching { java.net.URI(baseUrl.trim().trimEnd('/')).host }

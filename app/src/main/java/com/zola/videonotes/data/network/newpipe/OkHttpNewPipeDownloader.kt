@@ -1,5 +1,6 @@
 package com.zola.videonotes.data.network.newpipe
 
+import com.zola.videonotes.data.parser.stringCapped
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -38,7 +39,7 @@ class OkHttpNewPipeDownloader(
                 response.code,
                 response.message,
                 headerMap,
-                response.body?.string(),
+                response.body?.stringCapped(),
                 response.request.url.toString(),
             )
         }

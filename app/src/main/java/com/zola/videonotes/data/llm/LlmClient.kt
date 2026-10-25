@@ -51,6 +51,15 @@ class LlmStreamDiag {
 }
 
 /**
+ * M-02：流式接收中被打断时附带已收文本的失败。
+ * 调用方可用 [partial] 续写或保存草稿；不识别此类型的调用方仍按普通失败处理。
+ */
+class PartialStreamException(
+    message: String,
+    val partial: String,
+) : IOException(message)
+
+/**
  * OpenAI 兼容接口客户端（BYOK）。
  *
  * - `chatStream`：POST `{baseUrl}/chat/completions`，`stream:true`，手动解析 SSE；
@@ -117,6 +126,8 @@ class LlmClient @Inject constructor(
         // connect = 建连/发请求；first-packet = 响应已建立、等首包；stream = 流式接收中
         var phase = "connect"
         var receivedChars = 0
+        // M-02：文本累积器提至 try 外，流式超时失败时可随异常附带已收部分文本。
+        val sb = StringBuilder()
         try {
             call.execute().use { response ->
                 if (!response.isSuccessful) {
@@ -129,13 +140,18 @@ class LlmClient @Inject constructor(
                 phase = "first-packet"
                 val reader = response.body?.charStream()?.buffered()
                     ?: return@withContext Result.failure(IOException("响应体为空，请重试"))
-                val sb = StringBuilder()
+                var badLines = 0
                 reader.useLines { lines ->
                     for (line in lines) {
                         ensureActive()
                         val trimmed = line.trim()
                         if (trimmed.isEmpty() || trimmed.startsWith(":")) continue
-                        if (!trimmed.startsWith("data:")) continue
+                        if (!trimmed.startsWith("data:")) {
+                            // L-33：非 data 行不再静默跳过，计数并记日志（不触发失败，兼容事件行）。
+                            badLines++
+                            Log.w(TAG, "[llm-cloud] SSE 坏行（非 data 行）：${trimmed.take(200)}")
+                            continue
+                        }
                         val payload = trimmed.removePrefix("data:").trim()
                         if (payload == "[DONE]") break
                         val token = parseToken(payload)
@@ -147,6 +163,15 @@ class LlmClient @Inject constructor(
                             sb.append(token)
                             receivedChars = sb.length
                             onToken(token)
+                        } else {
+                            // L-33：解析失败的行计数；坏行过多说明服务端格式异常，直接失败而非缺句。
+                            badLines++
+                            Log.w(TAG, "[llm-cloud] SSE 坏行（解析失败）：${payload.take(200)}")
+                            if (badLines >= 10) {
+                                return@withContext Result.failure(
+                                    IOException("服务端返回多行无法解析的数据（$badLines 行），笔记可能缺句，已停止"),
+                                )
+                            }
                         }
                     }
                 }
@@ -167,7 +192,14 @@ class LlmClient @Inject constructor(
             if (phase == "stream") {
                 Log.d(TAG, "[llm-cloud] SSE 流中断: 已收 $receivedChars 字符, 原因=读超时")
             }
-            Result.failure(IOException("请求超时，请重试"))
+            // M-02：流式接收中超时，已收文本不再丢弃，随异常附带，调用方可续写或存草稿。
+            if (phase == "stream" && sb.isNotEmpty()) {
+                Result.failure(
+                    PartialStreamException("请求超时，已收到部分文本（$receivedChars 字符）", sb.toString()),
+                )
+            } else {
+                Result.failure(IOException("请求超时，请重试"))
+            }
         } catch (e: UnknownHostException) {
             diag?.failurePhase = phase
             diag?.receivedChars = receivedChars

@@ -32,6 +32,13 @@ abstract class LongTaskWorker(
     /** 子类真实逻辑；基类负责诊断日志与兜底。 */
     protected abstract suspend fun doDiagnosedWork(): Result
 
+    /**
+     * M-13：前台服务是否处于降级态（setForeground 失败）。阶段上报时据此在
+     * 知识库条目阶段文案后追加“（系统推迟中）”，让用户在界面上看得到降级。
+     */
+    @Volatile
+    protected var fgsDegraded = false
+
     /** 诊断日志 tag，默认类名。 */
     protected open fun diagTag(): String = this::class.java.simpleName
 
@@ -81,12 +88,9 @@ abstract class LongTaskWorker(
         } else {
             0
         }
-        val storageKey = inputData.getString(KEY_STORAGE_KEY).orEmpty()
-        val notificationId = if (storageKey.isNotBlank()) {
-            2000 + (storageKey.hashCode().let { if (it < 0) -it else it } % 1000)
-        } else {
-            LONG_TASK_NOTIFICATION_ID
-        }
+        // L-17：通知 id 改由 WorkInfo.id 派生（全 32 位范围）：同视频转写与生成是
+        // 两个不同的 Work，id 不同，通知不再互相覆盖；同一任务多次刷新 id 稳定。
+        val notificationId = id.hashCode()
         return ForegroundInfo(notificationId, notification, serviceType)
     }
 
@@ -102,8 +106,11 @@ abstract class LongTaskWorker(
     protected suspend fun safeSetForeground(stageText: String, progress: Float) {
         try {
             setForeground(foregroundInfo(stageText, progress))
+            fgsDegraded = false
         } catch (_: Exception) {
-            // 降级：无前台通知继续执行
+            // 降级：无前台通知继续执行；M-13：记诊断 + 置降级标志，阶段文案带上提示。
+            fgsDegraded = true
+            WorkerDiagnosticLog.log(applicationContext, diagTag(), "FGS 降级：前台通知挂不上，任务继续后台执行")
         }
     }
 }

@@ -40,7 +40,10 @@ class TranscriptRepository @Inject constructor(
             )
         }
         return fetcher.fetch(video).onSuccess { result ->
-            dao.replaceAll(video.storageKey(), result.segments.map { it.toEntity() })
+            // L-02：空字幕成功不清空已有缓存（一次空响应不应毁掉此前可用的字幕）。
+            if (result.segments.isNotEmpty()) {
+                dao.replaceAll(video.storageKey(), result.segments.map { it.toEntity() })
+            }
         }
     }
 

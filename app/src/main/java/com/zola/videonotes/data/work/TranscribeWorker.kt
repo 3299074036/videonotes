@@ -49,7 +49,9 @@ class TranscribeWorker @AssistedInject constructor(
                 if (stage.isBlank()) return@collect
                 // setProgress 在 try 之外：异常会直接杀死整个 doWork，此处单独捕获并记日志
                 try {
-                    setProgress(workDataOf(KEY_STAGE to stage, KEY_PROGRESS to progress))
+                    // M-13：FGS 降级时阶段文案带“（系统推迟中）”，知识库条目上看得到。
+                    val displayStage = if (fgsDegraded) "$stage（系统推迟中）" else stage
+                    setProgress(workDataOf(KEY_STAGE to displayStage, KEY_PROGRESS to progress))
                 } catch (t: Throwable) {
                     diag("reporter setProgress threw: ${t.javaClass.simpleName}: ${t.message}")
                 }
@@ -77,7 +79,7 @@ class TranscribeWorker @AssistedInject constructor(
                     Result.success(workDataOf(KEY_SEGMENT_COUNT to segments.size))
                 },
                 onFailure = { e ->
-                    // SubtitleCard 显示时会加"转写失败："前缀，此处兜底不重复加前缀；
+                    // 界面显示时会加“转写失败：”前缀，此处兜底不重复加前缀；
                     // message 为空时带上异常类名，避免下次只看到"请重试"无法定位。
                     val msg = e.message?.takeIf { it.isNotBlank() }
                         ?: "${e.javaClass.simpleName}（无详细信息），请重试"

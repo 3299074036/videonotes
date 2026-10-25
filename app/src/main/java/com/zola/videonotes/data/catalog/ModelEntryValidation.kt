@@ -6,8 +6,9 @@ package com.zola.videonotes.data.catalog
  * 口径与设计稿一致：只在表单内报错，不动列表。
  * - 名称、标识、模板、至少一个文件必填；LLM 恒为单文件。
  * - 标识：小写字母、数字、下划线或连字符；新增时不可与生效列表内 id 重复（编辑时标识不可改）。
- * - 文件：文件名、链接、大小必填；链接须为 http(s)；大小须大于 0；SHA-256 为空表示不校验，
- *   填了则须为 64 位十六进制。
+ * - 文件：文件名、链接、大小必填；链接须为 https（本机回环地址的 http 可放行，
+ *   M-06）；文件名不得含 /、\ 或 ..（M-07，防目录穿越）；大小须大于 0；
+ *   SHA-256 必填且须为 64 位十六进制（M-10：无哈希的模型首下载即成信任锚）。
  * - 识别模型按模板校验必需文件是否齐全（只认核心集：bpe/bbpe 模型文件不阻塞，
  *   缺了运行时报错时用户可再编辑补上）。
  */
@@ -72,6 +73,12 @@ fun templateLabel(templateId: String): String = when (templateId) {
 private val ID_PATTERN = Regex("^[a-z0-9_-]+$")
 private val SHA_PATTERN = Regex("^[0-9a-fA-F]{64}$")
 
+/** 回环地址判定（M-06/M-08 共用）：localhost / 127.x / ::1 视为本机源，http 可放行。 */
+internal fun isLoopbackUrl(url: String): Boolean {
+    val host = runCatching { java.net.URI(url).host }.getOrNull()?.lowercase() ?: return false
+    return host == "localhost" || host == "::1" || host == "[::1]" || host.startsWith("127.")
+}
+
 fun validateEntryDraft(
     draft: EntryDraft,
     existingIds: Set<String>,
@@ -105,17 +112,26 @@ fun validateEntryDraft(
             val prefix = "file_$index"
             if (file.name.isBlank()) {
                 errors += ValidationError("${prefix}_name", "文件名不能为空")
+            } else if (file.name.contains('/') || file.name.contains('\\') || file.name.contains("..")) {
+                // M-07：文件名含分隔符或 .. 可穿越到模型目录外（写任意路径 / 覆盖他人文件）。
+                errors += ValidationError("${prefix}_name", "文件名不能含 /、\\ 或 ..")
             }
             if (file.url.isBlank()) {
                 errors += ValidationError("${prefix}_url", "下载链接不能为空")
             } else if (!file.url.startsWith("http://") && !file.url.startsWith("https://")) {
                 errors += ValidationError("${prefix}_url", "下载链接须以 http:// 或 https:// 开头")
+            } else if (file.url.startsWith("http://") && !isLoopbackUrl(file.url)) {
+                // M-06：http 明文下载可被中间人替换文件；本机回环地址（本地自建源）除外。
+                errors += ValidationError("${prefix}_url", "下载链接须为 https（http 明文可被替换文件；本机回环地址除外）")
             }
             if (file.sizeBytes == null || file.sizeBytes <= 0L) {
                 errors += ValidationError("${prefix}_size", "大小须为大于 0 的字节数")
             }
-            if (file.sha256.isNotBlank() && !SHA_PATTERN.matches(file.sha256.trim())) {
-                errors += ValidationError("${prefix}_sha", "SHA-256 须为 64 位十六进制，不填则下载后不校验")
+            if (file.sha256.isBlank()) {
+                // M-10：无哈希的模型首下载即成信任锚，损坏文件可直达 native；建条目时必须提供。
+                errors += ValidationError("${prefix}_sha", "请填写 SHA-256（无哈希的模型损坏后可直达 native 崩溃）")
+            } else if (!SHA_PATTERN.matches(file.sha256.trim())) {
+                errors += ValidationError("${prefix}_sha", "SHA-256 须为 64 位十六进制")
             }
         }
         if (draft.kind == CatalogKind.ASR) {

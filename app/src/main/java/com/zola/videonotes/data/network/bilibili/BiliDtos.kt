@@ -9,7 +9,7 @@ data class BiliViewResponse(
     @SerializedName("data") val data: BiliVideoData? = null,
 )
 
-/** 视频信息主体。duration 单位为秒。 */
+/** 视频信息主体。duration 单位为秒；videos 为分P数（view 接口返回，缺省为 1）。 */
 data class BiliVideoData(
     @SerializedName("bvid") val bvid: String = "",
     @SerializedName("aid") val aid: Long = 0,
@@ -17,6 +17,7 @@ data class BiliVideoData(
     @SerializedName("pic") val pic: String = "",
     @SerializedName("duration") val duration: Long = 0,
     @SerializedName("owner") val owner: BiliOwner? = null,
+    @SerializedName("videos") val videos: Int = 1,
 )
 
 /** UP 主信息。 */

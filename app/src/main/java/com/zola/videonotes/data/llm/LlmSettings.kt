@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.zola.videonotes.data.catalog.isLoopbackUrl
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -56,7 +57,12 @@ class LlmSettings @Inject constructor(
         }
 
     suspend fun setBaseUrl(url: String) {
-        context.llmDataStore.edit { it[Keys.BASE_URL] = url.trim() }
+        val trimmed = url.trim()
+        // M-08：http 明文会泄露 API Key；本机回环地址（本地自建服务）除外。
+        if (trimmed.startsWith("http://") && !isLoopbackUrl(trimmed)) {
+            throw IllegalArgumentException("接口地址须为 https（http 明文会泄露 API Key；本机回环地址除外）")
+        }
+        context.llmDataStore.edit { it[Keys.BASE_URL] = trimmed }
     }
 
     suspend fun setModel(model: String) {

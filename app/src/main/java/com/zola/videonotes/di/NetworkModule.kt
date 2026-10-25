@@ -1,5 +1,6 @@
 package com.zola.videonotes.di
 
+import android.util.Log
 import com.zola.videonotes.BuildConfig
 import com.zola.videonotes.data.auth.BiliCookieInterceptor
 import com.zola.videonotes.data.auth.YoutubeCookieInterceptor
@@ -9,8 +10,8 @@ import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
-import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
@@ -67,14 +68,22 @@ object NetworkModule {
             .build()
     }
 
-    private fun loggingInterceptor(): HttpLoggingInterceptor =
-        HttpLoggingInterceptor().apply {
-            level = if (BuildConfig.DEBUG) {
-                HttpLoggingInterceptor.Level.BASIC
-            } else {
-                HttpLoggingInterceptor.Level.NONE
-            }
+    /**
+     * L-04：DEBUG 日志不再用 HttpLoggingInterceptor.BASIC（它打完整 URL 含查询串，
+     * 小红书查询串含 xsec_token，会进 logcat）。自写调试拦截器只记 method + host + path，
+     * 不记查询串与 header；release 下不输出。
+     */
+    private fun loggingInterceptor(): Interceptor = Interceptor { chain ->
+        val request = chain.request()
+        if (BuildConfig.DEBUG) {
+            Log.d("VideoNotesNet", "--> ${request.method} ${request.url.host}${request.url.encodedPath}")
         }
+        val response = chain.proceed(request)
+        if (BuildConfig.DEBUG) {
+            Log.d("VideoNotesNet", "<-- ${response.code} ${request.method} ${request.url.host}${request.url.encodedPath}")
+        }
+        response
+    }
 
     @Provides
     @Singleton

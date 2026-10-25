@@ -9,4 +9,6 @@
 
 各分段要点：
 
+```partials
 {partials}
+```

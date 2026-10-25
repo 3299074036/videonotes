@@ -2,6 +2,8 @@ package com.zola.videonotes
 
 import android.content.Intent
 import android.os.Bundle
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -23,6 +25,18 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var themePreferences: ThemePreferences
 
+    /**
+     * L-22：前台分享到达时的待处理文本。singleTop 复用实例时分享走 onNewIntent
+     * （此前注释称暂不处理，实则丢链接），由导航图消费后清零。
+     */
+    private val pendingSharedText = MutableStateFlow<String?>(null)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.extractSharedText()?.let { pendingSharedText.value = it }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -43,6 +57,8 @@ class MainActivity : ComponentActivity() {
             ) {
                 VideoNotesNavGraph(
                     startDestination = sharedText?.let { Routes.metadata(it) } ?: Routes.HOME,
+                    pendingSharedText = pendingSharedText,
+                    onSharedTextConsumed = { pendingSharedText.value = null },
                 )
             }
         }
@@ -50,8 +66,8 @@ class MainActivity : ComponentActivity() {
 
     /**
      * 从 ACTION_SEND 分享意图中提取文本。
-     * 说明：launchMode 保持默认 standard，App 已在前台时分享会创建新实例走 onCreate，
-     * 因此 onNewIntent 暂不处理。
+     * L-22：launchMode 已改 singleTop（单 Activity 应用，MainActivity 恒为栈顶，
+     * 前台分享必复用实例走 onNewIntent）；冷启动仍走 onCreate 的 startDestination。
      */
     private fun Intent.extractSharedText(): String? {
         if (action != Intent.ACTION_SEND) return null

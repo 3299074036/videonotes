@@ -22,6 +22,8 @@ data class TranscriptSegmentEntity(
     val source: String,
     /** 获取时间戳（毫秒），用于后续缓存策略。 */
     val fetchedAt: Long,
+    /** M-05：时间戳是否为估算值（v5 新增列，旧数据迁移默认 false）。 */
+    val estimated: Boolean = false,
 )
 
 /** domain → entity。 */
@@ -34,6 +36,7 @@ fun TranscriptSegment.toEntity(nowMs: Long = System.currentTimeMillis()): Transc
         text = text,
         source = source.name,
         fetchedAt = nowMs,
+        estimated = estimated,
     )
 
 /** entity → domain。未知 source 兜底为 OFFICIAL。 */
@@ -45,4 +48,5 @@ fun TranscriptSegmentEntity.toDomain(): TranscriptSegment =
         endMs = endMs,
         text = text,
         source = runCatching { SubtitleSource.valueOf(source) }.getOrDefault(SubtitleSource.OFFICIAL),
+        estimated = estimated,
     )

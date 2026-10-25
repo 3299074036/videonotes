@@ -19,6 +19,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -38,7 +39,9 @@ class VideoDownloader @Inject constructor(
     private val parserRegistry: ParserRegistry,
     private val streamFetcher: VideoStreamFetcher,
     private val dashFetcher: BiliDashFetcher,
-    private val okHttpClient: okhttp3.OkHttpClient,
+    // M-16：视频下载改走无 callTimeout 的 download 客户端；默认客户端 90 秒总超时
+    // 会在大文件尾巴掐断下载（模型下载客户端同款配置，见 NetworkModule）。
+    @javax.inject.Named("download") private val okHttpClient: okhttp3.OkHttpClient,
 ) {
 
     /**
@@ -81,7 +84,7 @@ class VideoDownloader @Inject constructor(
 
     /** 单文件直下到缓存，再由调用方转存。 */
     private suspend fun downloadSingle(url: String, headers: Map<String, String>, onProgress: (Float) -> Unit): File {
-        val tmp = File(context.cacheDir, "download_${System.currentTimeMillis()}.tmp")
+        val tmp = File(context.cacheDir, "download_${System.currentTimeMillis()}_${UUID.randomUUID()}.tmp")
         okHttpClient.downloadFile(url, tmp, headers, onProgress)
         return tmp
     }
@@ -97,7 +100,7 @@ class VideoDownloader @Inject constructor(
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         )
         val videoFile = downloadSingle(videoUrl, videoHeaders) { p -> onProgress(p * 0.45f) }
-        val outFile = File(context.cacheDir, "download_${System.currentTimeMillis()}.mp4")
+        val outFile = File(context.cacheDir, "download_${System.currentTimeMillis()}_${UUID.randomUUID()}.mp4")
         try {
             if (audioUrl != null) {
                 val audioFile = downloadSingle(audioUrl, videoHeaders) { p -> onProgress(0.45f + p * 0.45f) }
@@ -107,8 +110,8 @@ class VideoDownloader @Inject constructor(
                     runCatching { audioFile.delete() }
                 }
             } else {
-                // 无音频流：视频流本身可能已含音频，直接当成品
-                videoFile.copyTo(outFile, overwrite = true)
+                // L-03：无音频流时不再把无声视频当成品报成功，直接失败并明示。
+                throw IOException("该视频仅有画面、无音频流，无法下载完整视频")
             }
             onProgress(0.95f)
         } finally {

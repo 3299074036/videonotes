@@ -41,7 +41,7 @@ class XiaohongshuParser @Inject constructor(
     private val noteIdPattern = Regex("""/(?:explore|discovery/item)/([a-zA-Z0-9]+)""")
 
     override fun matches(url: String): Boolean =
-        XHS_HOSTS.any { url.contains(it, ignoreCase = true) }
+        url.urlHostMatches(*XHS_HOSTS.toTypedArray())
 
     override suspend fun parse(url: String): Result<VideoInfo> {
         return try {
@@ -74,6 +74,9 @@ class XiaohongshuParser @Inject constructor(
                 ?: IOException("小红书解析失败")
         } catch (e: IOException) {
             Result.failure(e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
+            throw e
         } catch (t: Throwable) {
             Result.failure(IOException("小红书解析失败：${t.message ?: t.javaClass.simpleName}"))
         }
@@ -141,12 +144,12 @@ class XiaohongshuParser @Inject constructor(
                     throw IOException("小红书分享页请求失败（HTTP ${response.code}），可能触发平台验证码风控")
                 }
                 val finalUrl = response.request.url.toString()
-                if (LOGIN_WALL_MARKERS.any { finalUrl.contains(it) }) {
+                if (isLoginWallUrl(finalUrl)) {
                     // 已登录（请求带了 Cookie）还撞墙，说明链接缺有效的 xsec_token，
                     // 不是没登录——报错要指对方向（重新粘贴原链接），别误导用户去登录。
                     throw XhsLoginRequiredException(tokenMissing = headers["Cookie"]?.isNotBlank() == true)
                 }
-                response.body?.string().orEmpty()
+                response.body?.stringCapped().orEmpty()
             }
         }
 
@@ -316,9 +319,6 @@ class XiaohongshuParser @Inject constructor(
 
         /** 原图 CDN：直接返回原始图（无水印、不二次压成 webp）。 */
         private const val XHS_IMAGE_CDN = "https://sns-img-bd.xhscdn.com"
-
-        /** 最终地址命中这些片段 = 被登录墙/风控拦下（不是作品被删）。 */
-        val LOGIN_WALL_MARKERS = listOf("/login", "website-login", "captcha")
 
         /** 清晰度优先级：h265 无水印，h264 有水印。 */
         private val STREAM_ORDER = listOf(

@@ -3,6 +3,7 @@ package com.zola.videonotes.ui.auth
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.zola.videonotes.data.auth.XhsAuthStore
+import com.zola.videonotes.data.parser.isLoginWallUrl
 import com.zola.videonotes.data.auth.XhsAuthStore.Companion.XHS_DESKTOP_UA
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -65,15 +66,10 @@ class XhsLoginViewModel @Inject constructor(
                 .build()
             client.newCall(request).execute().use { response ->
                 val finalUrl = response.request.url.toString()
-                !LOGIN_WALL_MARKERS.any { finalUrl.contains(it) }
+                !isLoginWallUrl(finalUrl)
             }
         } catch (t: Throwable) {
             false
         }
-    }
-
-    companion object {
-        /** 最终地址命中这些片段 = 被登录墙/风控拦下（不是作品被删）。 */
-        val LOGIN_WALL_MARKERS = listOf("/login", "website-login", "captcha")
     }
 }

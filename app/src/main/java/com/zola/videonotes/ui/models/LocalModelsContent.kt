@@ -408,12 +408,12 @@ private fun CatalogEntryRow(
     }
 }
 
-/** 探针四态文案：不可用结论如实说明原因，文件保留不自动删。 */
+/** 探针四态文案：不可用结论如实说明原因，文件保留不自动删；OK 态只代表模板探针通过（元数据级），不代表解码期实测通过，故文案明确写清，避免用户把模板校验当成生成保证（L-31）。 */
 @Composable
 private fun ProbeVerdict(probe: TemplateProbeState?) {
     when (probe) {
         TemplateProbeState.OK -> Text(
-            text = "模板校验通过，可正常生成",
+            text = "模板校验通过（模板可用，未实测生成）",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

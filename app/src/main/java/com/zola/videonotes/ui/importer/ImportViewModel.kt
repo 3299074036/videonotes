@@ -10,6 +10,7 @@ import com.zola.videonotes.data.local.NoteDao
 import com.zola.videonotes.data.local.VideoDao
 import com.zola.videonotes.data.local.platformEnum
 import com.zola.videonotes.data.work.KEY_STAGE
+import com.zola.videonotes.data.work.KEY_ERROR
 import com.zola.videonotes.data.work.LongTaskScheduler
 import com.zola.videonotes.domain.model.Platform
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -75,6 +76,12 @@ class ImportViewModel @Inject constructor(
                         t?.state == WorkInfo.State.RUNNING ||
                             t?.state == WorkInfo.State.ENQUEUED ->
                             t.progress.getString(KEY_STAGE)?.takeIf { it.isNotBlank() } ?: "处理中"
+                        // L-27：失败态单独分支（此前失败落入“已导入”/“已生成字幕”）。
+                        // 失败原因优先读 outputData 的 KEY_ERROR（失败落盘处），重试暂存的在 progress。
+                        g?.state == WorkInfo.State.FAILED ->
+                            "生成失败" + errorSuffix(g)
+                        t?.state == WorkInfo.State.FAILED ->
+                            "转写失败" + errorSuffix(t)
                         hasNote -> "笔记完成"
                         t?.state == WorkInfo.State.SUCCEEDED -> "已生成字幕"
                         else -> "已导入"
@@ -91,6 +98,13 @@ class ImportViewModel @Inject constructor(
             }
             combine(perVideo) { it.toList() }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** L-27：失败文案后缀（行内单行省略显示，详情见诊断日志）。 */
+    private fun errorSuffix(info: WorkInfo): String {
+        val msg = info.outputData.getString(KEY_ERROR)
+            ?: info.progress.getString(KEY_ERROR)
+        return msg?.takeIf { it.isNotBlank() }?.let { "：$it" } ?: ""
+    }
 
     /** 取活跃任务优先，否则取最近一个（与知识库同口径）。 */
     private fun pickWork(infos: List<WorkInfo>): WorkInfo? =

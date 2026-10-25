@@ -1,6 +1,7 @@
 package com.zola.videonotes.data.parser
 
 import com.zola.videonotes.domain.model.Platform
+import com.zola.videonotes.data.network.checkRedirectTarget
 import com.zola.videonotes.domain.model.VideoInfo
 import com.zola.videonotes.domain.parser.VideoParser
 import kotlinx.coroutines.Dispatchers
@@ -36,7 +37,7 @@ class KuaishouParser @Inject constructor(
     override val platform: Platform = Platform.KUAISHOU
 
     override fun matches(url: String): Boolean =
-        KUAISHOU_HOSTS.any { url.contains(it, ignoreCase = true) }
+        url.urlHostMatches(*KUAISHOU_HOSTS.toTypedArray())
 
     override suspend fun parse(url: String): Result<VideoInfo> {
         return try {
@@ -44,7 +45,9 @@ class KuaishouParser @Inject constructor(
             // 入口页（短链 / short-video / f 分享码）先跟随整条跳转链到移动端作品页；
             // 长视频页结构不同，统一改按 /fw/photo/ 请求。
             val pageUrl = expandRedirects(cleanUrl).replace("/fw/long-video/", "/fw/photo/")
-            val photo = findPhoto(extractInitState(fetchPage(pageUrl)))
+            // L-06：先取链接 id，findPhoto 只认该 id 的 key，不再取首个含 photo 的对象。
+            val linkId = PHOTO_ID_REGEX.find(pageUrl)?.groupValues?.get(1)
+            val photo = findPhoto(extractInitState(fetchPage(pageUrl)), linkId)
             val videoUrl = firstUrl(photo.optJSONArray("mainMvUrls"))?.ensureHttps()
             if (videoUrl.isNullOrBlank()) {
                 val atlas = photo.optJSONObject("ext_params")?.optJSONObject("atlas")
@@ -75,6 +78,9 @@ class KuaishouParser @Inject constructor(
             )
         } catch (e: IOException) {
             Result.failure(e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
+            throw e
         } catch (t: Throwable) {
             Result.failure(IOException("快手解析失败：${t.message ?: t.javaClass.simpleName}"))
         }
@@ -98,11 +104,11 @@ class KuaishouParser @Inject constructor(
             }.get().build()
             val location = noRedirect.newCall(request).execute().use { response ->
                 response.header("Location")?.takeIf { it.isNotBlank() }
-            } ?: return@withContext url
+            } ?: return@withContext checkRedirectTarget(url)
             url = url.toHttpUrlOrNull()?.resolve(location)?.toString()
-                ?: return@withContext url
+                ?: return@withContext checkRedirectTarget(url)
         }
-        url
+        checkRedirectTarget(url)
     }
 
     private suspend fun fetchPage(pageUrl: String): String = withContext(Dispatchers.IO) {
@@ -113,7 +119,7 @@ class KuaishouParser @Inject constructor(
             if (!response.isSuccessful) {
                 throw IOException("快手作品页请求失败（HTTP ${response.code}）")
             }
-            response.body?.string().orEmpty()
+            response.body?.stringCapped().orEmpty()
         }
     }
 
@@ -165,15 +171,15 @@ class KuaishouParser @Inject constructor(
     }
 
     /**
-     * INIT_STATE 以作品 id 为 key；value 的 key 并不总是链接里的 id，
-     * 所以遍历全部 key，返回第一个 `photo` 非空的对象，不按 id 精确定位。
+     * INIT_STATE 以作品 id 为 key；L-06：只认链接 id 的 key，无匹配时报错，
+     * 不再取第一个含 photo 的对象（多作品页可能取错视频，且记录的 videoId 与实际媒体不一致）。
      */
-    private fun findPhoto(initState: JSONObject): JSONObject {
-        for (key in initState.keys()) {
-            val photo = initState.optJSONObject(key)?.optJSONObject("photo")
-            if (photo != null) return photo
+    private fun findPhoto(initState: JSONObject, linkId: String?): JSONObject {
+        if (linkId == null) {
+            throw IOException("未能从快手链接中识别作品 ID")
         }
-        throw IOException("window.INIT_STATE 里没有作品数据")
+        return initState.optJSONObject(linkId)?.optJSONObject("photo")
+            ?: throw IOException("快手页面数据与链接作品 id 不匹配（INIT_STATE 里没有该作品）")
     }
 
     /** 从 CdnUrl 数组里取第一条有 url 的。 */

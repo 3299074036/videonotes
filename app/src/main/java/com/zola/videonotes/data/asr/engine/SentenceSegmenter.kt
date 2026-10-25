@@ -22,6 +22,11 @@ data class RawSegment(
     val startMs: Long,
     val endMs: Long,
     val text: String,
+    /**
+     * M-05：时间戳是否为均匀分配的估算值（无逐 token 时间戳时按块时长均匀分配，
+     * 如 Zipformer-CTC 的 text 路径）。估算段参与门禁时按近似处理，笔记 pill 标 ~。
+     */
+    val estimated: Boolean = false,
 )
 
 object SentenceSegmenter {
@@ -82,7 +87,8 @@ object SentenceSegmenter {
         fun flush() {
             val text = buf.toString().trim()
             if (text.isNotEmpty()) {
-                out.add(RawSegment(segStart, max(segEnd, segStart), text))
+                // M-05：无逐 token 时间戳时（均匀分配或全 0）即估算时间戳。
+                out.add(RawSegment(segStart, max(segEnd, segStart), text, estimated = !hasTimestamps))
             }
             buf.clear()
         }
@@ -127,7 +133,8 @@ object SentenceSegmenter {
         return sentences.mapIndexed { i, s ->
             val start = chunkOffsetMs + (i * per).roundToLong()
             val end = chunkOffsetMs + ((i + 1) * per).roundToLong()
-            RawSegment(start, max(end, start), s.trim())
+            // M-05：句间均匀分配即估算时间戳，标记后笔记 pill 显示“约”。
+            RawSegment(start, max(end, start), s.trim(), estimated = true)
         }.filter { it.text.isNotEmpty() }
     }
 }

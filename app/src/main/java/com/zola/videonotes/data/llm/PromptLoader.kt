@@ -23,13 +23,14 @@ class PromptLoader @Inject constructor(
         return stripHeaderComments(raw)
     }
 
-    /** 用占位符替换模板中的 `{key}`。 */
+    /** 用占位符替换模板中的 `{key}`。单次扫描替换：旧循环 replace 会把标题里的 `{transcript}` 在 transcript 轮次二次展开（L-29）。 */
     fun render(template: String, vars: Map<String, String>): String {
-        var result = template
-        for ((key, value) in vars) {
-            result = result.replace("{$key}", value)
+        if (vars.isEmpty()) return template
+        // 占位符含起止大括号，正则转义后单次匹配；lambda 返回值按字面使用，不做 $ 分组展开。
+        val pattern = vars.keys.joinToString("|") { Regex.escape("{$it}") }.toRegex()
+        return pattern.replace(template) { match ->
+            vars[match.value.removeSurrounding("{", "}")] ?: match.value
         }
-        return result
     }
 
     companion object {

@@ -54,7 +54,7 @@ class DouyinParser @Inject constructor(
     private var cachedTtwid: String? = null
 
     override fun matches(url: String): Boolean =
-        DOUYIN_HOSTS.any { url.contains(it, ignoreCase = true) }
+        url.urlHostMatches(*DOUYIN_HOSTS.toTypedArray())
 
     override suspend fun parse(url: String): Result<VideoInfo> {
         return try {
@@ -70,6 +70,9 @@ class DouyinParser @Inject constructor(
             parseViaHttp(type, videoId, url.trim())
         } catch (e: IOException) {
             Result.failure(e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
+            throw e
         } catch (t: Throwable) {
             Result.failure(IOException("抖音解析失败：${t.message ?: t.javaClass.simpleName}"))
         }
@@ -457,7 +460,7 @@ class DouyinParser @Inject constructor(
             if (!response.isSuccessful) {
                 throw IOException("抖音分享页请求失败（HTTP ${response.code}），可能触发平台风控")
             }
-            response.body?.string().orEmpty()
+            response.body?.stringCapped().orEmpty()
         }
     }
 
@@ -642,7 +645,7 @@ class DouyinParser @Inject constructor(
             }
             val registered = resp.headers.values("Set-Cookie").firstNotNullOfOrNull { extractTtwid(it) }
             val redirectUrl = try {
-                JSONObject(resp.body?.string().orEmpty()).optString("redirect_url")
+                JSONObject(resp.body?.stringCapped().orEmpty()).optString("redirect_url")
             } catch (e: Exception) {
                 ""
             }

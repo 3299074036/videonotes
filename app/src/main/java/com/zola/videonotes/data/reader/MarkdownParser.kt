@@ -34,8 +34,8 @@ sealed interface MdInline {
     data class Italic(val inlines: List<MdInline>) : MdInline
     data class Code(val code: String) : MdInline
     data class Link(val text: String, val url: String) : MdInline
-    /** 时间戳 pill：raw 如 `[[12:34]]`，seconds 为跳转秒数。 */
-    data class Pill(val raw: String, val seconds: Long) : MdInline
+    /** 时间戳 pill：raw 如 `[[12:34]]`（M-05 估算变体 `[[12:34~]]`），seconds 为跳转秒数。 */
+    data class Pill(val raw: String, val seconds: Long, val estimated: Boolean = false) : MdInline
 }
 
 /**
@@ -191,7 +191,9 @@ object MarkdownParser {
                     val seconds = TimestampValidator.parseToSeconds(
                         pill.removeSurrounding("[[", "]]"),
                     )
-                    if (seconds != null) result.add(MdInline.Pill(pill, seconds))
+                    // M-05：`~` 为估算标记，解析时保留到 Pill，供阅读器显示“约”。
+                    val estimated = pill.removeSurrounding("[[", "]]").endsWith("~")
+                    if (seconds != null) result.add(MdInline.Pill(pill, seconds, estimated))
                     else result.add(MdInline.Text(pill))
                 }
                 linkText.isNotEmpty() ->

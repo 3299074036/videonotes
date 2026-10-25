@@ -7,8 +7,11 @@ import com.zola.videonotes.data.asr.audio.WeiboAudioFetcher
 import com.zola.videonotes.data.asr.audio.PcmDecoder
 import com.zola.videonotes.data.asr.audio.XhsAudioFetcher
 import com.zola.videonotes.data.asr.audio.YoutubeAudioFetcher
+import android.media.MediaMetadataRetriever
+import com.zola.videonotes.data.asr.engine.RawSegment
 import com.zola.videonotes.data.asr.engine.SherpaAsrEngine
 import com.zola.videonotes.data.local.TranscriptSegmentDao
+import com.zola.videonotes.data.local.VideoDao
 import com.zola.videonotes.data.local.toEntity
 import com.zola.videonotes.domain.model.Platform
 import com.zola.videonotes.domain.model.SubtitleSource
@@ -81,6 +84,7 @@ class TranscribeAudioUseCase @Inject constructor(
     private val prefs: AsrPreferences,
     private val downloadManager: ModelDownloadManager,
     private val dao: TranscriptSegmentDao,
+    private val videoDao: VideoDao,
 ) {
 
     suspend fun execute(
@@ -110,15 +114,36 @@ class TranscribeAudioUseCase @Inject constructor(
             }.getOrThrow()
 
             onStage(TranscribeStage.DECODING_AUDIO, -1f)
-            val chunks = decoder.decodeToChunks(audioFile)
-            if (chunks.isEmpty()) throw IOException("音频解码失败：未能解出有效音频数据")
-
-            onStage(TranscribeStage.TRANSCRIBING, 0f)
-            val rawSegments = engine.transcribe(
-                model = model,
-                modelDir = downloadManager.modelDir(model.id),
-                pcmChunks = chunks,
-            ) { p -> onStage(TranscribeStage.TRANSCRIBING, p) }
+            // M-04：边解边转，不再把整段 PCM 攒在内存里（1 小时约 230MB）。
+            // 总采样点数取文件元数据（不解码），用于转写进度；取不到时进度报 -1（不定）。
+            val totalSamples = runCatching {
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(audioFile.absolutePath)
+                    val ms = retriever
+                        .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                        ?.toLongOrNull() ?: 0L
+                    ms * 16000L / 1000L
+                } finally {
+                    retriever.release()
+                }
+            }.getOrDefault(0L)
+            val rawSegments = mutableListOf<RawSegment>()
+            var decodedAny = false
+            engine.beginTranscription(model, downloadManager.modelDir(model.id)).use { session ->
+                onStage(TranscribeStage.TRANSCRIBING, 0f)
+                decoder.decodeStreaming(audioFile) { chunk ->
+                    decodedAny = true
+                    rawSegments += session.processChunk(chunk)
+                    val p = if (totalSamples > 0) {
+                        (session.consumedSamples.toFloat() / totalSamples).coerceIn(0f, 1f)
+                    } else {
+                        -1f
+                    }
+                    onStage(TranscribeStage.TRANSCRIBING, p)
+                }
+            }
+            if (!decodedAny) throw IOException("音频解码失败：未能解出有效音频数据")
             if (rawSegments.isEmpty()) throw IOException("转写结果为空，请检查音频是否有效")
             // 2026-10-24 英文案：字节级 BPE 碎片汤（如 Zipformer-CTC 旧 tokens 路径）
             // 非空但不可读，必须在入库前拦住，否则 LLM 只能用英文分析这堆“密文”。
@@ -128,8 +153,14 @@ class TranscribeAudioUseCase @Inject constructor(
 
             onStage(TranscribeStage.SAVING, -1f)
             val key = video.storageKey()
+            // L-20：写库前复查视频行仍存在：删除条目后在途任务仍可跑到这里，
+            // 不复查会把已删视频的字幕重新落库（孤儿数据）。行已删时跳过写库并报失败，
+            // 文案不含可重试关键字，不会触发 WorkManager 退避重跑。
+            if (videoDao.getByStorageKey(key) == null) {
+                return Result.failure(IOException("视频已被删除，跳过保存"))
+            }
             val segments = rawSegments.mapIndexed { idx, s ->
-                TranscriptSegment(key, idx, s.startMs, s.endMs, s.text, SubtitleSource.ASR)
+                TranscriptSegment(key, idx, s.startMs, s.endMs, s.text, SubtitleSource.ASR, s.estimated)
             }
             dao.replaceAll(key, segments.map { it.toEntity() })
             Result.success(segments)

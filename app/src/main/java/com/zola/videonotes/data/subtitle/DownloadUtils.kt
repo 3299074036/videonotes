@@ -1,5 +1,6 @@
 package com.zola.videonotes.data.subtitle
 
+import com.zola.videonotes.data.parser.stringCapped
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -16,7 +17,7 @@ internal suspend fun OkHttpClient.downloadText(url: String): String = withContex
         if (!response.isSuccessful) {
             throw IOException("字幕文件下载失败（HTTP ${response.code}）")
         }
-        response.body?.string()?.takeIf { it.isNotBlank() }
+        response.body?.stringCapped()?.takeIf { it.isNotBlank() }
             ?: throw IOException("字幕文件内容为空")
     }
 }

@@ -22,7 +22,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class KuaishouAudioFetcher @Inject constructor(
-    private val okHttpClient: OkHttpClient,
+    // M-16：同 VideoDownloader，走无 callTimeout 的 download 客户端。
+    @javax.inject.Named("download") private val okHttpClient: OkHttpClient,
     @ApplicationContext private val context: Context,
 ) : AudioFetcher {
 
@@ -33,7 +34,7 @@ class KuaishouAudioFetcher @Inject constructor(
                 ?: throw IOException("该快手视频未解析到可下载的直链，请重新解析（可能触发平台风控）")
             val dest = File(
                 File(context.cacheDir, "audio"),
-                "${video.platform.name}_${video.videoId}.mp4",
+                "${video.platform.name}_${video.videoId.replace(Regex("[^A-Za-z0-9._-]"), "_")}.mp4",
             )
             if (dest.exists() && dest.length() > 0) {
                 onProgress(1f)
@@ -48,6 +49,9 @@ class KuaishouAudioFetcher @Inject constructor(
             Result.success(dest)
         } catch (e: IOException) {
             Result.failure(e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
+            throw e
         } catch (t: Throwable) {
             Result.failure(IOException("快手音频获取失败：${t.message ?: t.javaClass.simpleName}"))
         }

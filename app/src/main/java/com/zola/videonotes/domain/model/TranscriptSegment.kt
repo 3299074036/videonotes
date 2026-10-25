@@ -10,6 +10,7 @@ package com.zola.videonotes.domain.model
  * @param endMs 结束时间（毫秒）
  * @param text 文本内容
  * @param source 来源
+ * @param estimated 时间戳是否为估算值（M-05：均匀分配而来，笔记 pill 显示“约”）
  */
 data class TranscriptSegment(
     val videoId: String,
@@ -18,6 +19,7 @@ data class TranscriptSegment(
     val endMs: Long,
     val text: String,
     val source: SubtitleSource,
+    val estimated: Boolean = false,
 )
 
 /**

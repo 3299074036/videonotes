@@ -1,6 +1,10 @@
 package com.zola.videonotes.ui.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.StateFlow
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -16,6 +20,7 @@ import com.zola.videonotes.ui.metadata.MetadataScreen
 import com.zola.videonotes.ui.models.ModelManagementScreen
 import com.zola.videonotes.ui.notes.NoteDetailScreen
 import com.zola.videonotes.ui.ops.OpsDiagnosticsScreen
+import com.zola.videonotes.ui.player.PlaybackArgsStore
 import com.zola.videonotes.ui.player.PlayerScreen
 import com.zola.videonotes.ui.settings.CrashLogScreen
 import com.zola.videonotes.ui.settings.LicensesScreen
@@ -32,8 +37,24 @@ import com.zola.videonotes.ui.settings.PromptEditorScreen
 fun VideoNotesNavGraph(
     startDestination: String = Routes.HOME,
     modifier: Modifier = Modifier,
+    /** L-22：前台分享到达时的待处理文本（MainActivity.onNewIntent 写入）。 */
+    pendingSharedText: StateFlow<String?>? = null,
+    /** 待处理文本已导航消费后的回调（由 Activity 清零，避免重复导航）。 */
+    onSharedTextConsumed: () -> Unit = {},
 ) {
     val navController = rememberNavController()
+    // L-22：冷启动走 startDestination；前台复用实例时走这里。注意不直接跳裸 IMPORT
+    // 页（ImportScreen 不接受初始文本，链接会丢），与冷启动一致进元信息页。
+    if (pendingSharedText != null) {
+        val pending by pendingSharedText.collectAsStateWithLifecycle(initialValue = null)
+        LaunchedEffect(pending) {
+            val text = pending
+            if (text != null) {
+                navController.navigate(Routes.metadata(text)) { launchSingleTop = true }
+                onSharedTextConsumed()
+            }
+        }
+    }
     NavHost(
         navController = navController,
         startDestination = startDestination,
@@ -45,15 +66,15 @@ fun VideoNotesNavGraph(
                     // 有笔记直接进笔记详情，否则用库里存的原始链接进元信息页
                     // （小红书原链接含 xsec_token；只有库里没有时才退回按 storageKey 反推的地址）。
                     if (noteId != null) {
-                        navController.navigate(Routes.noteDetail(noteId))
+                        navController.navigate(Routes.noteDetail(noteId)) { launchSingleTop = true }
                     } else {
                         val target = url.ifBlank { storageKeyToUrl(storageKey) }
-                        target?.let { navController.navigate(Routes.metadata(it)) }
+                        target?.let { navController.navigate(Routes.metadata(it)) { launchSingleTop = true } }
                     }
                 },
                 onAddVideoClick = { navController.navigate(Routes.IMPORT) },
                 onNavigateToModels = { section ->
-                    navController.navigate(Routes.modelManagement(section))
+                    navController.navigate(Routes.modelManagement(section)) { launchSingleTop = true }
                 },
                 onLicensesClick = { navController.navigate(Routes.LICENSES) },
                 onBiliLoginClick = { navController.navigate(Routes.BILI_LOGIN) },
@@ -65,7 +86,7 @@ fun VideoNotesNavGraph(
         composable(Routes.IMPORT) {
             ImportScreen(
                 // 解析与分享意图走同一路径：跳元信息页，解析失败由元信息页错误态呈现
-                onParse = { url -> navController.navigate(Routes.metadata(url)) },
+                onParse = { url -> navController.navigate(Routes.metadata(url)) { launchSingleTop = true } },
                 onSettingsClick = {
                     // 设置是 HOME 内的底部 Tab：经设置路由直达设置 Tab（与元信息页同款）
                     navController.navigate(Routes.settings("kb_settings"))
@@ -85,17 +106,22 @@ fun VideoNotesNavGraph(
             MetadataScreen(
                 onBackClick = { navController.popBackStack() },
                 onNavigateToModels = { section ->
-                    navController.navigate(Routes.modelManagement(section))
+                    navController.navigate(Routes.modelManagement(section)) { launchSingleTop = true }
                 },
                 onNavigateToSettings = {
                     // 直达设置 Tab（单页设置，无 LLM 子页）
                     navController.navigate(Routes.settings("kb_settings"))
                 },
                 onViewNoteClick = { noteId ->
-                    navController.navigate(Routes.noteDetail(noteId))
+                    navController.navigate(Routes.noteDetail(noteId)) { launchSingleTop = true }
                 },
                 onPlayClick = { storageKey, seconds, mediaUrl, sourceUrl ->
-                    navController.navigate(Routes.player(storageKey, seconds, mediaUrl, sourceUrl))
+                    // M-23：直链与原始链接不再进导航参数，改由内存一次性传递。
+                    PlaybackArgsStore.put(
+                        storageKey,
+                        PlaybackArgsStore.Args(mediaUrl = mediaUrl, sourceUrl = sourceUrl),
+                    )
+                    navController.navigate(Routes.player(storageKey, seconds)) { launchSingleTop = true }
                 },
             )
         }
@@ -110,10 +136,19 @@ fun VideoNotesNavGraph(
         ) { backStackEntry ->
             // 设置页路由（兼容旧入口）：经底部导航框架打开，可指定初始 Tab
             MainScreen(
-                onEntryClick = { _, _, _ -> },
-                onAddVideoClick = {},
+                onEntryClick = { storageKey, noteId, url ->
+                    // M-11：此前此处是空实现，设置路由内的知识库 Tab 点条目无反应（死 Tab）。
+                    // 与 HOME 同款跳转：有笔记进笔记详情，否则用库里链接进元信息页。
+                    if (noteId != null) {
+                        navController.navigate(Routes.noteDetail(noteId)) { launchSingleTop = true }
+                    } else {
+                        val target = url.ifBlank { storageKeyToUrl(storageKey) }
+                        target?.let { navController.navigate(Routes.metadata(it)) { launchSingleTop = true } }
+                    }
+                },
+                onAddVideoClick = { navController.navigate(Routes.IMPORT) },
                 onNavigateToModels = { section ->
-                    navController.navigate(Routes.modelManagement(section))
+                    navController.navigate(Routes.modelManagement(section)) { launchSingleTop = true }
                 },
                 onLicensesClick = { navController.navigate(Routes.LICENSES) },
                 onBiliLoginClick = { navController.navigate(Routes.BILI_LOGIN) },
@@ -147,7 +182,7 @@ fun VideoNotesNavGraph(
                     ?: Routes.SECTION_FULL,
                 onBackClick = { navController.popBackStack() },
                 onOpenSection = { section ->
-                    navController.navigate(Routes.modelManagement(section))
+                    navController.navigate(Routes.modelManagement(section)) { launchSingleTop = true }
                 },
             )
         }
@@ -179,7 +214,7 @@ fun VideoNotesNavGraph(
             NoteDetailScreen(
                 onBackClick = { navController.popBackStack() },
                 onPlayClick = { storageKey, seconds ->
-                    navController.navigate(Routes.player(storageKey, seconds))
+                    navController.navigate(Routes.player(storageKey, seconds)) { launchSingleTop = true }
                 },
                 onNavigateHome = {
                     navController.navigate(Routes.HOME) {
@@ -199,14 +234,6 @@ fun VideoNotesNavGraph(
                 navArgument(Routes.ARG_START_SECONDS) {
                     type = NavType.LongType
                     defaultValue = 0L
-                },
-                navArgument(Routes.ARG_MEDIA_URL) {
-                    type = NavType.StringType
-                    defaultValue = ""
-                },
-                navArgument(Routes.ARG_SOURCE_URL) {
-                    type = NavType.StringType
-                    defaultValue = ""
                 },
             ),
         ) {

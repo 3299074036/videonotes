@@ -31,13 +31,18 @@ class YoutubeParser @Inject constructor(
     /**
      * 覆盖 watch / youtu.be / shorts / live / embed / music 等常见形态，
      * 要求 11 位视频 ID，避免把播放列表等链接误判。
+     * L-12：nocookie embed 形态并入本正则（此前纯 host 回退会放行非视频链接）。
      */
     private val idPattern = Regex(
-        """(?i)(?:youtube\.com/(?:watch\?[^#\s]*v=|shorts/|live/|embed/|v/)|youtu\.be/)([A-Za-z0-9_-]{11})""",
+        """(?i)(?:youtube\.com/(?:watch\?[^#\s]*v=|shorts/|live/|embed/|v/)|youtu\.be/|youtube-nocookie\.com/embed/)([A-Za-z0-9_-]{11})""",
     )
 
-    override fun matches(url: String): Boolean =
-        idPattern.containsMatchIn(url) || YOUTUBE_HOSTS.any { url.contains(it, ignoreCase = true) }
+    override fun matches(url: String): Boolean {
+        // M-14：先过 host 门禁，再跑路径正则；否则 evil.com/?x=youtube.com/watch?v=... 会被误认。
+        // L-12：去掉 nocookie 纯 host 回退（频道/播放列表等非视频链接曾因此误判进解析）。
+        if (!url.urlHostMatches(*YOUTUBE_HOSTS.toTypedArray())) return false
+        return idPattern.containsMatchIn(url)
+    }
 
     override suspend fun parse(url: String): Result<VideoInfo> {
         return try {
@@ -64,6 +69,9 @@ class YoutubeParser @Inject constructor(
                     sourceUrl = url.trim(),
                 ),
             )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
+            throw e
         } catch (t: Throwable) {
             // 含 NoSuchMethodError 在内的所有异常统一转为中文友好错误；
             // 已导入 cookie 仍报 LOGIN_REQUIRED 时，提示登录态可能已过期（让用户知道该重导，而非链接问题）

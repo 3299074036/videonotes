@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import java.io.IOException
 import javax.inject.Inject
 
 /** 播放器页 UI 状态。 */
@@ -74,11 +76,16 @@ class PlayerViewModel @Inject constructor(
     /** 视频存储键。 */
     val storageKey: String = savedStateHandle.get<String>(Routes.ARG_STORAGE_KEY).orEmpty()
 
+    // M-23：详情页解析好的直链与原始链接（可能为空：笔记页等入口不带）。
+    // 不再走导航参数（会进 saved state），改由 PlaybackArgsStore 一次性传递；
+    // 进程被杀后取不到时为空，后续逻辑退回库里链接重解析（既有兜底）。
+    private val playbackArgs: PlaybackArgsStore.Args? = PlaybackArgsStore.take(storageKey)
+
     /** 详情页解析好的直链（可能为空：笔记页等入口不带）。 */
-    private val mediaUrlArg: String = savedStateHandle.get<String>(Routes.ARG_MEDIA_URL).orEmpty()
+    private val mediaUrlArg: String = playbackArgs?.mediaUrl.orEmpty()
 
     /** 详情页解析用的原始链接（含查询串；可能为空）。 */
-    private val sourceUrlArg: String = savedStateHandle.get<String>(Routes.ARG_SOURCE_URL).orEmpty()
+    private val sourceUrlArg: String = playbackArgs?.sourceUrl.orEmpty()
 
     /** 起始秒数（pill 跳转传入）。 */
     val startSeconds: Long = savedStateHandle.get<Long>(Routes.ARG_START_SECONDS) ?: 0L
@@ -94,7 +101,13 @@ class PlayerViewModel @Inject constructor(
         if (_downloadState.value is PlayerDownloadUiState.Working) return
         _downloadState.value = PlayerDownloadUiState.Working(0f)
         viewModelScope.launch {
-            val video = buildVideoInfo(storageKey) ?: run {
+            val video = try {
+                buildVideoInfo(storageKey)
+            } catch (e: IOException) {
+                // L-13：DB 读取失败显式报错，不再按“视频信息无效”笼统处理。
+                _downloadState.value = PlayerDownloadUiState.Failed(e.message ?: "本地视频信息读取失败")
+                return@launch
+            } ?: run {
                 _downloadState.value = PlayerDownloadUiState.Failed("视频信息无效")
                 return@launch
             }
@@ -127,7 +140,13 @@ class PlayerViewModel @Inject constructor(
     fun load() {
         _uiState.value = PlayerUiState.Loading
         viewModelScope.launch {
-            val video = buildVideoInfo(storageKey)
+            val video = try {
+                buildVideoInfo(storageKey)
+            } catch (e: IOException) {
+                // L-13：DB 读取失败显式报错，不再按“视频信息无效”笼统处理。
+                _uiState.value = PlayerUiState.Failed(e.message ?: "本地视频信息读取失败")
+                return@launch
+            }
             if (video == null) {
                 _uiState.value = PlayerUiState.Failed("视频信息无效")
                 return@launch
@@ -153,8 +172,12 @@ class PlayerViewModel @Inject constructor(
                 video.platform == Platform.KUAISHOU ||
                 video.platform == Platform.WEIBO
             ) {
-                parserRegistry.parse(video.sourceUrl).getOrNull() ?: run {
-                    _uiState.value = PlayerUiState.Failed("该视频暂不支持站内播放，请重新解析")
+                // M-21：解析失败不再丢弃原始错误（此前 getOrNull + 笼统文案，用户无法知道是
+                // 链接失效、登录墙还是风控），把原始原因透传到错误视图。
+                parserRegistry.parse(video.sourceUrl).getOrElse { err ->
+                    _uiState.value = PlayerUiState.Failed(
+                        "重新解析失败：${err.message ?: err.javaClass.simpleName}",
+                    )
                     return@launch
                 }
             } else {
@@ -194,7 +217,14 @@ class PlayerViewModel @Inject constructor(
         }
         // 有效 sourceUrl 优先级：详情页带过来的原始链接 → 库里存的原始链接
         // （新解析的含小红书 xsec_token）→ 按 storageKey 反推的地址（小红书无 token 会撞墙）。
-        val storedUrl = runCatching { videoDao.getByStorageKey(storageKey)?.url.orEmpty() }.getOrElse { "" }
+        // L-13：库读取异常不再静默当成空链接（后续撞墙报错难定位），直接抛给调用方显式报错。
+        val storedUrl = try {
+            videoDao.getByStorageKey(storageKey)?.url.orEmpty()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw IOException("本地视频信息读取失败，请重试", e)
+        }
         val sourceUrl = sourceUrlArg.ifBlank { storedUrl }.ifBlank { reconstructed }
         return VideoInfo(
             platform = platform,

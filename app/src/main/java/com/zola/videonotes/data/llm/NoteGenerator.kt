@@ -3,6 +3,7 @@ package com.zola.videonotes.data.llm
 import com.zola.videonotes.data.llm.local.LlmDiagnosticLog
 import com.zola.videonotes.data.local.NoteDao
 import com.zola.videonotes.data.local.NoteEntity
+import com.zola.videonotes.data.local.VideoDao
 import com.zola.videonotes.data.local.TranscriptSegmentDao
 import com.zola.videonotes.data.local.toDomain
 import com.zola.videonotes.domain.model.Note
@@ -49,6 +50,7 @@ enum class GenerateStage(val displayText: String) {
 class NoteGenerator @Inject constructor(
     private val transcriptSegmentDao: TranscriptSegmentDao,
     private val noteDao: NoteDao,
+    private val videoDao: VideoDao,
     private val engineProvider: LlmEngineProvider,
     private val promptLoader: PromptLoader,
     private val promptOverrides: PromptOverrides,
@@ -157,8 +159,19 @@ class NoteGenerator @Inject constructor(
         if (failures.isNotEmpty()) {
             markdown = TimestampValidator.stripFailures(markdown, failures)
         }
+        // M-05：与估算分段匹配的 pill 标 ~，阅读器显示“约”，跳转时提示近似位置。
+        markdown = TimestampValidator.markEstimated(markdown, segments)
 
+        // L-20：写库前复查视频行仍存在（同转写侧）：删除后在途生成仍可跑到这里，
+        // 不复查会把已删视频的笔记重新落库。行已删时跳过写库并报失败，
+        // 文案不含可重试关键字，不会触发退避重跑。
+        if (videoDao.getByStorageKey(video.storageKey()) == null) {
+            return Result.failure(IOException("视频已被删除，跳过保存"))
+        }
+        // L-26：再生成保留原 id：REPLACE 换 id 会导致回栈里的旧详情页（按 id 查）显示“笔记不存在”。
+        val existingId = noteDao.getByVideoKey(video.storageKey())?.id
         val entity = NoteEntity(
+            id = existingId ?: 0,
             videoStorageKey = video.storageKey(),
             // 抖音文案常是几百字日记全文，直接当标题会撑坏详情页布局（TopAppBar + 大标题）；
             // 取首行、截断到 40 字，完整文案仍保留在 videoTitle 字段里。

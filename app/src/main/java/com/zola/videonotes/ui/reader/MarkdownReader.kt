@@ -448,7 +448,7 @@ private sealed interface Segment {
         val bold: Boolean = false,
         val italic: Boolean = false,
     ) : Segment
-    data class Pill(val seconds: Long) : Segment
+    data class Pill(val seconds: Long, val estimated: Boolean = false) : Segment
 }
 
 /** 把 MdInline 树展平为渲染片段（合并相邻同样式文本）。 */
@@ -471,7 +471,7 @@ private fun flattenSegments(inlines: List<MdInline>): List<Segment> {
             is MdInline.Italic -> inline.inlines.forEach { walk(it, bold, true) }
             is MdInline.Code -> emit(Segment.Text(inline.code, bold, italic, code = true))
             is MdInline.Link -> out.add(Segment.Link(inline.text, inline.url, bold, italic))
-            is MdInline.Pill -> out.add(Segment.Pill(inline.seconds))
+            is MdInline.Pill -> out.add(Segment.Pill(inline.seconds, inline.estimated))
         }
     }
     inlines.forEach { walk(it, false, false) }
@@ -537,6 +537,7 @@ private fun RichParagraph(
                 is Segment.Pill -> {
                     TimestampPill(
                         seconds = seg.seconds,
+                        estimated = seg.estimated,
                         onClick = { onPillClick(seg.seconds) },
                         modifier = Modifier.padding(horizontal = 2.dp),
                     )

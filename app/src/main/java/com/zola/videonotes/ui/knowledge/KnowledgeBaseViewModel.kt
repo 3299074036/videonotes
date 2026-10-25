@@ -1,6 +1,8 @@
 package com.zola.videonotes.ui.knowledge
 
 import androidx.lifecycle.ViewModel
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import com.zola.videonotes.data.knowledge.KnowledgeFilterPrefs
@@ -10,9 +12,13 @@ import com.zola.videonotes.data.local.platformEnum
 import com.zola.videonotes.data.local.toEntity
 import com.zola.videonotes.data.notes.NoteRepository
 import com.zola.videonotes.data.parser.ParserRegistry
+import com.zola.videonotes.data.pipeline.GenerateCrashGuard
+import com.zola.videonotes.data.pipeline.PipelineStartStore
 import com.zola.videonotes.data.subtitle.TranscriptRepository
 import com.zola.videonotes.data.work.KEY_PROGRESS
 import com.zola.videonotes.data.work.KEY_STAGE
+import com.zola.videonotes.data.work.generateUniqueName
+import com.zola.videonotes.data.work.transcribeUniqueName
 import com.zola.videonotes.data.work.LongTaskScheduler
 import com.zola.videonotes.domain.model.Platform
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -23,13 +29,12 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
+import java.io.File
 
 /** 知识库条目：一条视频及其笔记/任务状态的聚合。 */
 data class KnowledgeEntry(
@@ -91,6 +96,9 @@ class KnowledgeBaseViewModel @Inject constructor(
     private val parserRegistry: ParserRegistry,
     private val longTaskScheduler: LongTaskScheduler,
     private val filterPrefs: KnowledgeFilterPrefs,
+    private val pipelineStartStore: PipelineStartStore,
+    private val generateCrashGuard: GenerateCrashGuard,
+    @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     private val _query = MutableStateFlow("")
@@ -134,43 +142,41 @@ class KnowledgeBaseViewModel @Inject constructor(
 
     /** 全部视频 → 条目（含笔记关联与每个视频的任务状态）。 */
     private val allEntries: Flow<List<KnowledgeEntry>> =
-        combine(videoDao.observeAll(), noteDao.observeAll()) { videos, notes ->
-            videos to notes.associateBy { it.videoStorageKey }
-        }.flatMapLatest { (videos, noteByKey) ->
-            if (videos.isEmpty()) return@flatMapLatest flowOf(emptyList())
-            val perVideo: List<Flow<KnowledgeEntry>> = videos.map { v ->
+        // M-12：单流观察全部长任务（公共 tag），内存中按单视频 tag 归属 join；
+        // 此前每视频 2 条 getWorkInfosForUniqueWorkFlow，视频一多就是 2N 条观察流。
+        combine(
+            videoDao.observeAll(),
+            noteDao.observeAll(),
+            longTaskScheduler.observeAllLongTasks(),
+        ) { videos, notes, works ->
+            val noteByKey = notes.associateBy { it.videoStorageKey }
+            videos.map { v ->
                 val key = v.storageKey
-                combine(
-                    longTaskScheduler.observeTranscribe(key),
-                    longTaskScheduler.observeGenerateNote(key),
-                ) { tInfos, gInfos ->
-                    val t = pickWork(tInfos)
-                    val g = pickWork(gInfos)
-                    val n = noteByKey[key]
-                    KnowledgeEntry(
-                        storageKey = key,
-                        url = v.url,
-                        title = v.title,
-                        platform = v.platformEnum(),
-                        durationSec = v.durationSec,
-                        author = v.author,
-                        coverUrl = v.coverUrl,
-                        noteId = n?.id,
-                        noteTitle = n?.title.orEmpty(),
-                        createdAt = v.createdAt,
-                        // 有笔记即有文稿；否则看是否有转写任务在跑/跑完（简化：成功态的任务视为有文稿）
-                        hasTranscript = n != null ||
-                            t?.state == WorkInfo.State.SUCCEEDED,
-                        transcribeState = t?.state,
-                        transcribeStage = t?.progress?.getString(KEY_STAGE).orEmpty(),
-                        transcribeProgress = t?.progress?.getFloat(KEY_PROGRESS, -1f) ?: -1f,
-                        generateState = g?.state,
-                        generateStage = g?.progress?.getString(KEY_STAGE).orEmpty(),
-                        generateProgress = g?.progress?.getFloat(KEY_PROGRESS, -1f) ?: -1f,
-                    )
-                }
-            }
-            combine(perVideo) { it.toList().sortedByDescending { e -> e.createdAt } }
+                val t = pickWork(works.filter { it.tags.contains(transcribeUniqueName(key)) })
+                val g = pickWork(works.filter { it.tags.contains(generateUniqueName(key)) })
+                val n = noteByKey[key]
+                KnowledgeEntry(
+                    storageKey = key,
+                    url = v.url,
+                    title = v.title,
+                    platform = v.platformEnum(),
+                    durationSec = v.durationSec,
+                    author = v.author,
+                    coverUrl = v.coverUrl,
+                    noteId = n?.id,
+                    noteTitle = n?.title.orEmpty(),
+                    createdAt = v.createdAt,
+                    // 有笔记即有文稿；否则看是否有转写任务在跑/跑完（简化：成功态的任务视为有文稿）
+                    hasTranscript = n != null ||
+                        t?.state == WorkInfo.State.SUCCEEDED,
+                    transcribeState = t?.state,
+                    transcribeStage = t?.progress?.getString(KEY_STAGE).orEmpty(),
+                    transcribeProgress = t?.progress?.getFloat(KEY_PROGRESS, -1f) ?: -1f,
+                    generateState = g?.state,
+                    generateStage = g?.progress?.getString(KEY_STAGE).orEmpty(),
+                    generateProgress = g?.progress?.getFloat(KEY_PROGRESS, -1f) ?: -1f,
+                )
+            }.sortedByDescending { e -> e.createdAt }
         }
 
     /** 条目总数（页头「共 N 篇笔记」用，不受搜索 / 筛选影响）。 */
@@ -211,8 +217,11 @@ class KnowledgeBaseViewModel @Inject constructor(
 
     /**
      * 删除条目：删 VideoEntity + 级联删关联笔记 + 清字幕/转写缓存 + 取消后台任务。
+     * L-23：顺带清该视频的管线偏好键（启动时刻 + 崩溃熔断），删后不再残留；
+     * L-36：顺带删该视频的音频缓存文件。附属清理尽力而为，失败不影响条目删除本身。
      */
     suspend fun deleteVideo(storageKey: String) {
+        val video = videoDao.getByStorageKey(storageKey)
         val note = noteDao.getByVideoKey(storageKey)
         if (note != null) {
             noteRepository.delete(note.id)
@@ -221,6 +230,33 @@ class KnowledgeBaseViewModel @Inject constructor(
         videoDao.deleteByStorageKey(storageKey)
         longTaskScheduler.cancelTranscribe(storageKey)
         longTaskScheduler.cancelGenerateNote(storageKey)
+        runCatching {
+            pipelineStartStore.clear(storageKey)
+            generateCrashGuard.reset(storageKey)
+        }
+        if (video != null) {
+            deleteAudioCacheFor(video.platform, storageKey)
+        }
+    }
+
+    /**
+     * L-36：删该条目对应的音频缓存。文件名约定与 6 个 AudioFetcher 一致：
+     * `<platform>_<videoId 清洗后>.<mp4|m4a>`（B站/YouTube 用 m4a，其余 mp4），
+     * 故按 `<platform>_<videoId>.` 前缀匹配，不假设扩展名；同名前缀的滞留 .tmp
+     * 也一并带走。尽力而为：任何异常都不抛给调用方，不删其他条目的文件。
+     */
+    private fun deleteAudioCacheFor(platform: String, storageKey: String) {
+        runCatching {
+            val videoId = storageKey.substringAfter(":", "").takeIf { it.isNotBlank() }
+                ?: return@runCatching
+            val cleaned = videoId.replace(Regex("[^A-Za-z0-9._-]"), "_")
+            val prefix = "${platform}_${cleaned}."
+            File(context.cacheDir, "audio").listFiles()?.forEach { file ->
+                if (file.name.startsWith(prefix)) {
+                    runCatching { file.delete() }
+                }
+            }
+        }
     }
 
     /** 取活跃任务优先，否则取最近一个，避免显示陈旧状态。 */

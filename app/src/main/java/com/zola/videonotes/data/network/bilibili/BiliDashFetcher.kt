@@ -34,13 +34,25 @@ class BiliDashFetcher @Inject constructor(
                 api.playurl(aid = aid, cid = cid)
             }
             if (playurl.code != 0) {
-                throw IOException("B站接口返回异常（code=${playurl.code}），该视频可能为付费内容")
+                // L-01：按 code 分流，不再一律报付费内容（-101 未登录、-404 不存在、
+                // -412 限流此前都被同一文案覆盖）。fetchSingleFile 已透传原始 code，不动。
+                throw IOException(
+                    when (playurl.code) {
+                        -101 -> "B站未登录，请先登录（code=-101）"
+                        -404 -> "B站视频不存在（code=-404）"
+                        -412 -> "B站暂时限制了请求，请稍后重试（code=-412）"
+                        else -> "B站接口返回异常（code=${playurl.code}）"
+                    },
+                )
             }
             val dash = playurl.data?.dash
                 ?: throw IOException("该视频暂不支持（可能为付费内容）")
             Result.success(dash)
         } catch (e: IOException) {
             Result.failure(e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
+            throw e
         } catch (t: Throwable) {
             Result.failure(IOException("B站接口请求失败：${t.message ?: t.javaClass.simpleName}"))
         }
@@ -74,6 +86,9 @@ class BiliDashFetcher @Inject constructor(
             Result.success(if (url.startsWith("//")) "https:$url" else url)
         } catch (e: IOException) {
             Result.failure(e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
+            throw e
         } catch (t: Throwable) {
             Result.failure(IOException("B站接口请求失败：${t.message ?: t.javaClass.simpleName}"))
         }

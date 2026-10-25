@@ -3,6 +3,7 @@ package com.zola.videonotes.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.zola.videonotes.data.llm.LlmClient
+import com.zola.videonotes.data.catalog.isLoopbackUrl
 import com.zola.videonotes.data.llm.LlmCredentialStore
 import com.zola.videonotes.data.llm.LlmEngineResolver
 import com.zola.videonotes.data.llm.LlmEngineType
@@ -29,6 +30,8 @@ import javax.inject.Inject
 /** 大语言模型设置页 UI 状态。 */
 data class LlmSettingsUiState(
     val baseUrl: String = "",
+    /** M-08：接口地址保存校验错误（http 非回环），显示在地址框下方。 */
+    val baseUrlError: String? = null,
     val model: String = "",
     val apiKey: String = "",
     val testing: Boolean = false,
@@ -98,8 +101,15 @@ class LlmSettingsViewModel @Inject constructor(
     }
 
     fun onBaseUrlChange(value: String) {
-        _uiState.update { it.copy(baseUrl = value, testResult = null) }
-        viewModelScope.launch { llmSettings.setBaseUrl(value) }
+        _uiState.update { it.copy(baseUrl = value, testResult = null, baseUrlError = null) }
+        viewModelScope.launch {
+            try {
+                llmSettings.setBaseUrl(value)
+            } catch (e: IllegalArgumentException) {
+                // M-08：非法地址不保存，错误显示在地址框下方（输入内容保留，方便改）。
+                _uiState.update { it.copy(baseUrlError = e.message) }
+            }
+        }
     }
 
     fun onPresetClick(preset: LlmPresets.Preset) {
@@ -151,6 +161,13 @@ class LlmSettingsViewModel @Inject constructor(
         testJob = viewModelScope.launch {
             try {
                 val state = _uiState.value
+                // M-08：输入框里未保存的 http 地址同样不能拿 Key 去试（与保存态同一口径）。
+                if (state.baseUrl.trim().startsWith("http://") && !isLoopbackUrl(state.baseUrl.trim())) {
+                    _uiState.update { s ->
+                        s.copy(testing = false, testResult = "接口地址须为 https（http 明文会泄露 API Key）", testSuccess = false)
+                    }
+                    return@launch
+                }
                 llmClient.testConnection(state.baseUrl, state.apiKey)
                     .onSuccess {
                         _uiState.update { s ->

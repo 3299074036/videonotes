@@ -2,6 +2,8 @@ package com.zola.videonotes.di
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.zola.videonotes.data.local.AppDatabase
 import com.zola.videonotes.data.local.NoteDao
 import com.zola.videonotes.data.local.TranscriptSegmentDao
@@ -18,6 +20,19 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
 
+    /**
+     * M-05：v4→v5，分段表新增 estimated 列（估算时间戳标记）。
+     * 旧数据默认 false（视为实测时间戳）；新增列 NOT NULL + DEFAULT 0，旧库直接升级不丢数据。
+     */
+    val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "ALTER TABLE transcript_segments " +
+                    "ADD COLUMN estimated INTEGER NOT NULL DEFAULT 0",
+            )
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase =
@@ -26,6 +41,7 @@ object DatabaseModule {
         // 历史背景：M4 v1→v2 时曾用破坏性迁移，笔记可重生成；但 v4 已含视频表与文稿，
         // 且小红书旧条目 token 丢失后不可恢复，清库代价已不可接受。
         Room.databaseBuilder(context, AppDatabase::class.java, "videonotes.db")
+            .addMigrations(MIGRATION_4_5)
             .build()
 
     @Provides

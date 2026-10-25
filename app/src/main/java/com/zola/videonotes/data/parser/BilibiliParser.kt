@@ -27,8 +27,7 @@ class BilibiliParser @Inject constructor(
     private val avPattern = Regex("""(?i)av(\d+)""")
 
     override fun matches(url: String): Boolean =
-        url.contains("bilibili.com", ignoreCase = true) ||
-            url.contains("b23.tv", ignoreCase = true)
+        url.urlHostMatches("bilibili.com", "b23.tv")
 
     override suspend fun parse(url: String): Result<VideoInfo> {
         return try {
@@ -58,10 +57,16 @@ class BilibiliParser @Inject constructor(
                     durationSec = data.duration.coerceAtLeast(0),
                     author = data.owner?.name.orEmpty(),
                     sourceUrl = url.trim(),
+                    // M-17：多分P只取 P1（取流/字幕/音频三处均 firstOrNull cid）；
+                    // 分P数随解析结果带到详情页提示，不进库（详情页每次现解析）。
+                    partCount = data.videos.coerceAtLeast(1),
                 ),
             )
         } catch (e: IOException) {
             Result.failure(e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
+            throw e
         } catch (t: Throwable) {
             Result.failure(IOException("B站解析失败：${t.message ?: t.javaClass.simpleName}，请检查链接或稍后重试"))
         }

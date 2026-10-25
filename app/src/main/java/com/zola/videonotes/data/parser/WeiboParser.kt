@@ -40,8 +40,17 @@ class WeiboParser @Inject constructor(
 
     override val platform: Platform = Platform.WEIBO
 
-    override fun matches(url: String): Boolean =
-        TCN_REGEX.containsMatchIn(url) || WEIBO_RULES.any { it.second.containsMatchIn(url) }
+    override fun matches(url: String): Boolean {
+        // M-14：先按 host 门禁，再跑路径正则；否则 evil.com/?x=weibo.com/... 这类 URL 会被误认。
+        val host = url.urlHost() ?: return false
+        return when {
+            host == "t.cn" && TCN_REGEX.containsMatchIn(url) -> true
+            host == "weibo.com" || host.endsWith(".weibo.com") ||
+                host == "weibo.cn" || host.endsWith(".weibo.cn") ||
+                host == "video.weibo.com" -> WEIBO_RULES.any { it.second.containsMatchIn(url) }
+            else -> false
+        }
+    }
 
     override suspend fun parse(url: String): Result<VideoInfo> {
         return try {
@@ -73,6 +82,9 @@ class WeiboParser @Inject constructor(
             Result.success(info)
         } catch (e: IOException) {
             Result.failure(e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
+            throw e
         } catch (t: Throwable) {
             Result.failure(IOException("微博解析失败：${t.message ?: t.javaClass.simpleName}"))
         }
@@ -118,7 +130,7 @@ class WeiboParser @Inject constructor(
             if (cookie.isNotBlank()) header("Cookie", cookie)
         }.get().build()
         val (code, contentType, body) = noRedirect.newCall(request).execute().use { response ->
-            Triple(response.code, response.header("Content-Type").orEmpty(), response.body?.string().orEmpty())
+            Triple(response.code, response.header("Content-Type").orEmpty(), response.body?.stringCapped().orEmpty())
         }
         when (code) {
             200 -> Unit
@@ -214,7 +226,7 @@ class WeiboParser @Inject constructor(
         }.build()
         val body = client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw IOException("微博数据获取失败，请稍后重试")
-            response.body?.string().orEmpty()
+            response.body?.stringCapped().orEmpty()
         }
         val json = try {
             JSONObject(body)

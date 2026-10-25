@@ -477,6 +477,16 @@ private fun MetadataHeader(
         downloadState = downloadState,
         onDownloadClick = onDownloadClick,
     )
+    // M-17：B站多分P只取 P1（取流/字幕/音频三处均 firstOrNull cid）；
+    // 明确提示，避免用户以为字幕、转写与笔记覆盖全部分P。
+    if (info.platform == Platform.BILIBILI && info.partCount > 1) {
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
+        Text(
+            text = "本视频共 ${info.partCount} 分P，当前仅处理第 1 分P（字幕、转写与笔记均以 P1 为准）",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 /**

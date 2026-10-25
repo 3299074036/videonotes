@@ -244,6 +244,14 @@ class LocalModelDownloadManager @Inject constructor(
             ) {
                 runCatching { templateProbe.probeCurated(model, prefs.fileFor(model)) }
             }
+            // L-30：动态条目同理补探（此前只有精选设门条目有启动补探，动态条目结论
+            // 丢失后只能重下）。结论指纹绑定当前文件，文件未变时 validProbe 非空不重复探。
+            if (status == DlStatus.COMPLETED && model.source == CatalogSource.DYNAMIC) {
+                val entry = dynamicRegistry.entryFor(model.id)
+                if (entry != null && dynamicRegistry.validProbe(entry) == null) {
+                    runCatching { templateProbe.probe(entry) }
+                }
+            }
         }
     }
 

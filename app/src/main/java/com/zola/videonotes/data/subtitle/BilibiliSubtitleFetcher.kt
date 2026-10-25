@@ -92,6 +92,9 @@ class BilibiliSubtitleFetcher @Inject constructor(
             )
         } catch (e: IOException) {
             Result.failure(e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
+            throw e
         } catch (t: Throwable) {
             Result.failure(IOException("B站字幕获取失败：${t.message ?: t.javaClass.simpleName}"))
         }

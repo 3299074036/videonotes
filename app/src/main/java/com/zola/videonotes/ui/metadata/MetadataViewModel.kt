@@ -263,22 +263,28 @@ class MetadataViewModel @Inject constructor(
         if (_inlinePlayerState.value is InlinePlayerState.Loading) return
         _inlinePlayerState.value = InlinePlayerState.Loading
         viewModelScope.launch {
+            // M-21：解析失败保留原始错误；全部取流手段都失败时把原因透传到错误态，
+            // 而不是一句笼统的“暂不支持站内播放”。抖音/微博的“退回已存直链一试”是既定回退，不动。
+            var parseError: Throwable? = null
             val playable = when (video.platform) {
                 Platform.XIAOHONGSHU, Platform.KUAISHOU -> {
                     if (video.mediaUrl.isNotBlank()) {
                         video
                     } else {
-                        parserRegistry.parse(video.sourceUrl).getOrNull()
+                        parserRegistry.parse(video.sourceUrl).getOrElse { parseError = it; null }
                     }
                 }
                 Platform.DOUYIN, Platform.WEIBO -> {
-                    parserRegistry.parse(video.sourceUrl).getOrNull()
+                    parserRegistry.parse(video.sourceUrl).getOrElse { parseError = it; null }
                         ?: video.takeIf { it.mediaUrl.isNotBlank() }
                 }
                 else -> video
             }
             if (playable == null) {
-                _inlinePlayerState.value = InlinePlayerState.Failed("该视频暂不支持站内播放，请重新解析")
+                _inlinePlayerState.value = InlinePlayerState.Failed(
+                    parseError?.let { "重新解析失败：${it.message ?: it.javaClass.simpleName}" }
+                        ?: "该视频暂不支持站内播放，请重新解析",
+                )
                 return@launch
             }
             streamFetcher.fetch(playable).fold(
@@ -767,8 +773,15 @@ class MetadataViewModel @Inject constructor(
         _transcribeState.value = TranscribeUiState.Working("准备中…", -1f)
         // 用本次任务的 id 精确观察：unique-work 列表里可能残留旧任务，
         // 直接观察列表第一个会显示旧状态（多次重试后界面永远停在第一次失败上）。
-        val workId = longTaskScheduler.enqueueTranscribe(info)
-        attachTranscribeObserverById(workId, info)
+        // L-19：入队单点收进 Scheduler（查活跃 + 入队原子）：已有在跑任务时只观察它，
+        // 不再 REPLACE 打断；L-18：入队异常转失败态，不崩溃。
+        viewModelScope.launch {
+            longTaskScheduler.enqueueTranscribeIfIdle(info)
+                .onSuccess { workId -> attachTranscribeObserverById(workId, info) }
+                .onFailure { e ->
+                    _transcribeState.value = TranscribeUiState.Failed(e.message ?: "入队失败，请重试")
+                }
+        }
     }
 
     /** 主动发起/重试场景：按任务 id 精确观察本次任务。 */
@@ -876,27 +889,27 @@ class MetadataViewModel @Inject constructor(
         recordPipelineStart(info)
         _generateState.value = GenerateNoteUiState.Working("准备中…")
         viewModelScope.launch {
-            // 入队前同步直查（与 syncGenerateWorkState 同款口径）：同 key 已有
-            // RUNNING / ENQUEUED（退避待跑也是 ENQUEUED）的生成任务时只观察、
-            // 不再 enqueue——scheduler 是 REPLACE，重复入队会打断在跑的任务，
-            // 且反复重启会干扰熔断的死亡标记记账。终态旧任务不拦，正常新入队。
-            val infos = runCatching {
-                longTaskScheduler.observeGenerateNote(info.storageKey()).first()
-            }.getOrDefault(emptyList())
-            val active = infos.firstOrNull {
-                it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED
-            }
-            if (active != null) {
-                attachGenerateObserver(info)
-                return@launch
-            }
             if (pipelineCancelRequested) {
                 // 直查窗口内用户已取消：不把已取消的任务重新拉起
                 _generateState.value = GenerateNoteUiState.Idle
                 return@launch
             }
-            val workId = longTaskScheduler.enqueueGenerateNote(info)
-            attachGenerateObserverById(workId, info)
+            // L-19：入队单点收进 Scheduler（查活跃 + 入队原子）：同 key 已有
+            // RUNNING / ENQUEUED（退避待跑也是 ENQUEUED）的生成任务时只观察、
+            // 不再 enqueue——scheduler 是 REPLACE，重复入队会打断在跑的任务，
+            // 且反复重启会干扰熔断的死亡标记记账。终态旧任务不拦，正常新入队。
+            // 取消标志同步传进锁内复查，取消与入队竞速时不复活已取消的任务。
+            // L-18：入队异常转失败态，不崩溃。
+            // L-32：同视频转写在跑时生成入队直接失败（文案进 Failed 态），不产出旧版笔记。
+            longTaskScheduler.enqueueGenerateNoteIfIdle(info) { pipelineCancelRequested }
+                .onSuccess { workId -> attachGenerateObserverById(workId, info) }
+                .onFailure { e ->
+                    _generateState.value = if (pipelineCancelRequested) {
+                        GenerateNoteUiState.Idle
+                    } else {
+                        GenerateNoteUiState.Failed(e.message ?: "入队失败，请重试")
+                    }
+                }
         }
     }
 

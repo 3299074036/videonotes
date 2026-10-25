@@ -27,7 +27,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -146,7 +148,24 @@ fun PlayerScreen(
                     },
                 )
                 is PlayerUiState.Ready -> {
-                    val exoPlayer = remember(state.stream.url, state.stream.audioUrl) {
+                    // M-20：主视频流播放失败（403/过期直链）此前无错误态，只剩黑屏。
+                    // 音频合并源失败仍走原有回退；主源失败则切错误视图（可重试/浏览器打开）。
+                    var playbackError by remember { mutableStateOf<String?>(null) }
+                    var retryCount by remember { mutableStateOf(0) }
+                    val error = playbackError
+                    if (error != null) {
+                        PlayerErrorView(
+                            message = error,
+                            onRetry = { playbackError = null; retryCount++ },
+                            onOpenInBrowser = {
+                                DeepLinkBuilder.build(viewModel.storageKey, viewModel.startSeconds)
+                                    ?.let { link ->
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, link.toUri()))
+                                    }
+                            },
+                        )
+                    } else {
+                    val exoPlayer = remember(state.stream.url, state.stream.audioUrl, retryCount) {
                         val dataSourceFactory = DefaultHttpDataSource.Factory()
                             .setDefaultRequestProperties(state.stream.headers)
                         // B站 DASH 音视频分离：视频流无音频轨，用 MergingMediaSource
@@ -179,6 +198,9 @@ fun PlayerScreen(
                                             prepare()
                                             if (resumePosition > 0) seekTo(resumePosition)
                                             playWhenReady = true
+                                        } else {
+                                            // 主源失败：切错误态，不再黑屏静默。
+                                            playbackError = "视频播放失败：${error.message ?: "请重试或用浏览器打开"}"
                                         }
                                     }
                                 })
@@ -209,6 +231,7 @@ fun PlayerScreen(
                         },
                         modifier = Modifier.fillMaxSize(),
                     )
+                    } // else：播放器分支结束
                 }
             }
         }

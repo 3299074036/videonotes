@@ -24,4 +24,6 @@ data class VideoInfo(
     val sourceUrl: String,
     val mediaUrl: String = "",
     val mediaHeaders: Map<String, String> = emptyMap(),
+    /** 分P数（仅 B站解析时填充，>1 表示多分P视频；其余平台恒为 1）。 */
+    val partCount: Int = 1,
 )

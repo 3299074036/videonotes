@@ -16,6 +16,7 @@ import com.zola.videonotes.domain.asr.AsrModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.Closeable
 import java.io.File
 import java.io.IOException
 import javax.inject.Inject
@@ -46,22 +47,27 @@ class SherpaAsrEngine @Inject constructor(
      * @param onProgress 总体进度 0..1
      * @return 句子级分段（时间戳为整段音频的绝对毫秒）
      */
-    suspend fun transcribe(
-        model: AsrModel,
+    /**
+     * M-04：会话式转写。recognizer 只建一次，逐块喂 PCM、逐块出分段；
+     * 调用方无需先把整段音频解成 List<FloatArray> 存在内存里。
+     * 用完必须 [close]（或 `use {}`），否则 native recognizer 泄漏。
+     * [processChunk] 内部切到 Dispatchers.Default（native decode 为阻塞调用）。
+     */
+    inner class TranscriptionSession(
+        private val model: AsrModel,
         modelDir: File,
-        pcmChunks: List<FloatArray>,
-        onProgress: (Float) -> Unit,
-    ): List<RawSegment> = withContext(Dispatchers.Default) {
-        val recognizer = createRecognizer(model, modelDir)
-        try {
-            val out = mutableListOf<RawSegment>()
-            val total = pcmChunks.size.coerceAtLeast(1)
-            var consumedSamples = 0L
-            pcmChunks.forEachIndexed { index, chunk ->
-                if (chunk.isEmpty()) {
-                    onProgress(((index + 1).toFloat() / total).coerceIn(0f, 1f))
-                    return@forEachIndexed
-                }
+    ) : Closeable {
+        private val recognizer: OfflineRecognizer = createRecognizer(model, modelDir)
+
+        /** 已消费采样点数（16kHz），调用方可用它算进度与绝对时间。 */
+        var consumedSamples = 0L
+            private set
+
+        private var chunkIndex = 0
+
+        suspend fun processChunk(chunk: FloatArray): List<RawSegment> =
+            withContext(Dispatchers.Default) {
+                if (chunk.isEmpty()) return@withContext emptyList()
                 val chunkOffsetMs = (consumedSamples * 1000.0 / SAMPLE_RATE).roundToLong()
                 val chunkDurationMs = (chunk.size * 1000.0 / SAMPLE_RATE).roundToLong()
                 val stream = recognizer.createStream()
@@ -81,17 +87,17 @@ class SherpaAsrEngine @Inject constructor(
                         WorkerDiagnosticLog.log(
                             appContext,
                             "asr",
-                            "[对照] ${model.id} chunk=$index " +
+                            "[对照] ${model.id} chunk=$chunkIndex " +
                                 "text=${result.text.take(100)} | " +
                                 "tokens=${result.tokens.take(8).joinToString(" ")}",
                         )
-                        out += SentenceSegmenter.toSegmentsFromText(
+                        SentenceSegmenter.toSegmentsFromText(
                             text = result.text,
                             chunkOffsetMs = chunkOffsetMs,
                             chunkDurationMs = chunkDurationMs,
                         )
                     } else {
-                        out += SentenceSegmenter.toSegments(
+                        SentenceSegmenter.toSegments(
                             tokens = result.tokens.toList(),
                             timestampsSec = result.timestamps,
                             durationsSec = result.durations,
@@ -101,14 +107,48 @@ class SherpaAsrEngine @Inject constructor(
                     }
                 } finally {
                     stream.release()
+                }.also {
+                    consumedSamples += chunk.size
+                    chunkIndex++
                 }
-                consumedSamples += chunk.size
-                onProgress(((index + 1).toFloat() / total).coerceIn(0f, 1f))
             }
-            out
-        } finally {
+
+        override fun close() {
             recognizer.release()
         }
+    }
+
+    /** 建会话（模型加载为阻塞 native 调用，内部切到 Dispatchers.Default）。 */
+    suspend fun beginTranscription(model: AsrModel, modelDir: File): TranscriptionSession =
+        withContext(Dispatchers.Default) { TranscriptionSession(model, modelDir) }
+
+    /**
+     * 转写 16kHz 单声道 PCM 块列表（[PcmDecoder] 产出）。
+     *
+     * @param model 选中的模型（决定引擎类型与文件名）
+     * @param modelDir 模型文件目录（filesDir/models/<modelId>/）
+     * @param pcmChunks 16kHz 单声道 PCM 块
+     * @param onProgress 总体进度 0..1
+     * @return 句子级分段（时间戳为整段音频的绝对毫秒）
+     *
+     * M-04：改走 [TranscriptionSession] 实现，逻辑与流式路径同一份；
+     * 需要全量列表的调用方仍可用本函数，长音频优先走会话 + 解码流式回调。
+     */
+    suspend fun transcribe(
+        model: AsrModel,
+        modelDir: File,
+        pcmChunks: List<FloatArray>,
+        onProgress: (Float) -> Unit,
+    ): List<RawSegment> {
+        val out = mutableListOf<RawSegment>()
+        val total = pcmChunks.size.coerceAtLeast(1)
+        beginTranscription(model, modelDir).use { session ->
+            pcmChunks.forEachIndexed { index, chunk ->
+                out += session.processChunk(chunk)
+                onProgress(((index + 1).toFloat() / total).coerceIn(0f, 1f))
+            }
+        }
+        return out
     }
 
     /**
@@ -118,12 +158,6 @@ class SherpaAsrEngine @Inject constructor(
         if (!dir.isDirectory) throw IOException("模型目录不存在：${model.displayName}")
         val numThreads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
 
-        fun requiredFile(suffix: String, desc: String): String {
-            val f = dir.listFiles()?.firstOrNull { it.name.endsWith(suffix) && it.length() > 0 }
-                ?: throw IOException("模型文件缺失（$desc），请重新下载${model.displayName}")
-            return f.absolutePath
-        }
-
         /**
          * 按目录条目文件名精确定位（B 档新分支用；旧分支维持后缀查找不动）。
          * 下载按条目文件名落盘，故目录名即条目名，不存在或为空时抛中文错误。
@@ -132,6 +166,17 @@ class SherpaAsrEngine @Inject constructor(
             val f = File(dir, exactName)
             if (f.exists() && f.length() > 0) return f.absolutePath
             throw IOException("模型文件缺失（$desc），请重新下载${model.displayName}")
+        }
+
+        /**
+         * L-34：按条目文件名精确定位（替代后缀扫描：目录残留旧版同类文件时
+         * listFiles 顺序未定义，firstOrNull 挑哪一个不确定）。在 model.files 里
+         * 找以后缀结尾的条目名（目录顺序以条目为准），再走 catalogFile 精确取文件。
+         */
+        fun catalogFileBySuffix(suffix: String, desc: String): String {
+            val name = model.files.firstOrNull { it.name.endsWith(suffix) }?.name
+                ?: throw IOException("模型文件缺失（$desc），请重新下载${model.displayName}")
+            return catalogFile(name, desc)
         }
 
         /** 在条目文件集中按名字关键字定位（Transducer 的 encoder/decoder/joiner 用）。 */
@@ -149,22 +194,22 @@ class SherpaAsrEngine @Inject constructor(
         val modelConfig = when (model.engineKind) {
             AsrModel.EngineKind.WHISPER -> OfflineModelConfig(
                 whisper = OfflineWhisperModelConfig(
-                    encoder = requiredFile("-encoder.int8.onnx", "编码器"),
-                    decoder = requiredFile("-decoder.int8.onnx", "解码器"),
+                    encoder = catalogFileBySuffix("-encoder.int8.onnx", "编码器"),
+                    decoder = catalogFileBySuffix("-decoder.int8.onnx", "解码器"),
                     language = "zh",
                     task = "transcribe",
                     enableTokenTimestamps = true,
                 ),
-                tokens = requiredFile("-tokens.txt", "词表"),
+                tokens = catalogFileBySuffix("-tokens.txt", "词表"),
                 numThreads = numThreads,
             )
             AsrModel.EngineKind.SENSE_VOICE -> OfflineModelConfig(
                 senseVoice = OfflineSenseVoiceModelConfig(
-                    model = requiredFile("model.int8.onnx", "模型"),
+                    model = catalogFileBySuffix("model.int8.onnx", "模型"),
                     language = "zh",
                     useInverseTextNormalization = true,
                 ),
-                tokens = requiredFile("tokens.txt", "词表"),
+                tokens = catalogFileBySuffix("tokens.txt", "词表"),
                 numThreads = numThreads,
             )
             // WP7：Paraformer 组装只需 model 路径（AAR 类字段实证：仅 model + qnnConfig），
@@ -173,9 +218,9 @@ class SherpaAsrEngine @Inject constructor(
             // SentenceSegmenter 既有「按块时长均匀分配」兜底自动生效。
             AsrModel.EngineKind.PARAFORMER -> OfflineModelConfig(
                 paraformer = OfflineParaformerModelConfig(
-                    model = requiredFile("model.int8.onnx", "模型"),
+                    model = catalogFileBySuffix("model.int8.onnx", "模型"),
                 ),
-                tokens = requiredFile("tokens.txt", "词表"),
+                tokens = catalogFileBySuffix("tokens.txt", "词表"),
                 numThreads = numThreads,
             )
             // B 档新增：Zipformer-CTC（k2-fsa WenetSpeech 系）。单 model + tokens，

@@ -37,12 +37,14 @@ internal fun formatPillSeconds(seconds: Long): String {
 /**
  * 时间戳 pill：可点击的小芯片（主色容器）。
  * 点击后按平台拼 deep link 跳转对应时间点（见 DeepLinkBuilder）。
+ * M-05：估算时间戳显示“约 mm:ss”，提示用户跳转位置为近似值。
  */
 @Composable
 fun TimestampPill(
     seconds: Long,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    estimated: Boolean = false,
 ) {
     Surface(
         onClick = onClick,
@@ -62,7 +64,7 @@ fun TimestampPill(
             )
             Spacer(modifier = Modifier.width(2.dp))
             Text(
-                text = formatPillSeconds(seconds),
+                text = if (estimated) "约${formatPillSeconds(seconds)}" else formatPillSeconds(seconds),
                 style = MaterialTheme.typography.labelSmall,
             )
         }

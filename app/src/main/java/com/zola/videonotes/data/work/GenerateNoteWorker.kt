@@ -83,7 +83,9 @@ class GenerateNoteWorker @AssistedInject constructor(
             progressState.collect { (stage, progress, _) ->
                 if (stage.isBlank()) return@collect
                 try {
-                    setProgress(workDataOf(KEY_STAGE to stage, KEY_PROGRESS to progress))
+                    // M-13：FGS 降级时阶段文案带“（系统推迟中）”，知识库条目上看得到。
+                    val displayStage = if (fgsDegraded) "$stage（系统推迟中）" else stage
+                    setProgress(workDataOf(KEY_STAGE to displayStage, KEY_PROGRESS to progress))
                 } catch (t: Throwable) {
                     diag("reporter setProgress threw: ${t.javaClass.simpleName}: ${t.message}")
                 }
@@ -124,7 +126,9 @@ class GenerateNoteWorker @AssistedInject constructor(
                     // H-03：次数上限见 MAX_RETRY_ATTEMPTS；耗尽后走 failure 分支，KEY_ERROR 保留。
                     if (!isLocalEngine && isRetryable(msg) && runAttemptCount + 1 < MAX_RETRY_ATTEMPTS) {
                         // 同 TranscribeWorker：重试中暂存错误到 progress，避免错误丢失。
-                        setProgress(workDataOf(KEY_STAGE to "准备重试…", KEY_PROGRESS to -1f, KEY_ERROR to msg))
+                        // M-13：FGS 降级时同样带“（系统推迟中）”。
+                        val retryStage = if (fgsDegraded) "准备重试…（系统推迟中）" else "准备重试…"
+                        setProgress(workDataOf(KEY_STAGE to retryStage, KEY_PROGRESS to -1f, KEY_ERROR to msg))
                         Result.retry()
                     } else {
                         Result.failure(workDataOf(KEY_ERROR to msg))
