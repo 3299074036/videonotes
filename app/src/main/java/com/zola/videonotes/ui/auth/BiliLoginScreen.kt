@@ -125,11 +125,15 @@ private const val BILI_OVERLAP_FIX_JS = """
         }
       }
       if(!found) return;
-      // 「登录」按钮：取离协议块底部最近的一个（排除页眉等远处的同名按钮）
+      // 「登录」按钮：取离协议块底部最近的一个（排除页眉等远处的同名按钮）。
+      // 按钮可能是 button / a / div（B站移动端表单有用 div 做按钮的情况），且只认最外层
+      // 文本恰为“登录”的元素（内层 span 文本也是“登录”，推它移不动按钮本身）。
       var best = null, bestDist = Infinity;
-      document.querySelectorAll('button, [role="button"], a').forEach(function(el){
+      document.querySelectorAll('button, a, div, span').forEach(function(el){
         var txt = (el.innerText || '').trim();
         if(txt !== '登录') return;
+        var p = el.parentElement;
+        if(p && (p.innerText || '').trim() === '登录') return;
         var br = el.getBoundingClientRect();
         if(br.width === 0 || br.height === 0) return;
         var d = Math.abs(br.top - bottom);
@@ -151,10 +155,15 @@ private const val BILI_OVERLAP_FIX_JS = """
     }catch(e){}
   }
   fix();
-  // 单页应用异步渲染，延迟再修几遍（有界，不常驻）
-  setTimeout(fix, 500);
-  setTimeout(fix, 1500);
-  setTimeout(fix, 3000);
+  // 单页应用会晚渲染、切标签、输手机号时重排版：一次性修必漏。改成 DOM 变化时防抖重修
+  // （fix 本身幂等：推到位后再次测量不再重叠即不再推），WebView 关闭时随页面一起销毁。
+  var timer = null;
+  var obs = new MutationObserver(function(){
+    if(timer) clearTimeout(timer);
+    timer = setTimeout(fix, 300);
+  });
+  obs.observe(document.body, {childList:true, subtree:true, attributes:true, characterData:true});
+  window.addEventListener('resize', function(){ setTimeout(fix, 300); });
 })();
 """
 

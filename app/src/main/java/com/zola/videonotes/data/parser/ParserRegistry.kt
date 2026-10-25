@@ -28,10 +28,25 @@ class ParserRegistry @Inject constructor(
 
     /** 解析视频元信息；无匹配平台时返回中文友好错误。 */
     suspend fun parse(url: String): Result<VideoInfo> {
-        val parser = parserFor(url)
+        val input = url.trim()
+        // 先从分享文本里提链接再匹配：用户常直接粘贴整段分享文案（带标题、作者等杂质），
+        // 匹配与解析都应以提到的第一条链接为准，而不是整段文本。
+        val extracted = extractFirstUrl(input)
+        val target = extracted ?: input
+        val parser = parserFor(target)
             ?: return Result.failure(
-                IllegalArgumentException("暂不支持的链接：请粘贴 YouTube / B站 / 抖音 / 小红书的视频链接"),
+                IllegalArgumentException(
+                    if (extracted == null)
+                        "没有识别到视频链接：请粘贴包含 https 链接的分享文本（小红书分享口令暂不支持解析）"
+                    else
+                        "暂不支持的链接（${hostOf(target)}）：请粘贴 YouTube / B站 / 抖音 / 小红书的视频链接",
+                ),
             )
-        return parser.parse(url)
+        return parser.parse(target)
     }
+
+    /** 从链接里取域名（诊断用，取不到时回退前 60 字）。 */
+    private fun hostOf(url: String): String =
+        Regex("""https?://([^/]+)""").find(url)?.groupValues?.get(1)
+            ?: url.take(60)
 }
