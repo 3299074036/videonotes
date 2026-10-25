@@ -150,9 +150,9 @@ class LocalModelsViewModel @Inject constructor(
     }
 
     /**
-     * 探针结论（动态已下载行与设探针门精选行展示用，指纹失效返回 null）。
-     * 扩围：老精选条目手动探针后也读无门结论（未探过为 null，副行不显示）；
-     * 选用探针门仍在 requestSelect/init 里先判 needsGate，本函数扩围不改变门。
+     * 探针结论（指纹失效返回 null）。老精选条目手动探针后也读无门结论
+     * （未探过为 null，副行不显示）；选用门已扩到全部模型，requestSelect/init
+     * 按模板类型用本函数结论判定（设门条目必须 OK，老精选只拦 LOAD_FAILED）。
      */
     fun probeStateOf(entry: CatalogEntry): TemplateProbeState? = when {
         entry.source == CatalogSource.DYNAMIC -> registry.validProbe(entry)
@@ -180,11 +180,23 @@ class LocalModelsViewModel @Inject constructor(
             viewModelScope.launch { llmPrefs.setModelId(id) }
             return
         }
-        // 已下载：探针门（模板校验，不是评测，保留）——未通过的不可选，给原因不静默；
-        // 通过的直接落选，不再有 C7 首次确认。
-        if (entry.source == CatalogSource.DYNAMIC || entry.requiresProbe) {
-            if (probeStateOf(entry) != TemplateProbeState.OK) {
+        // 已下载：探针门扩到全部模型（白名单取消）——按模板类型定通过标准：
+        // 设门条目（动态/设门精选）必须 OK，否则不可选；
+        // 老精选/影子（内置模板）：内嵌探针不过不等于不能用，只拦真加载失败；
+        // 从未探过（null）：先去探，探完再选（ⓘ 已对全部已下载模型开放）。
+        val probe = probeStateOf(entry)
+        val gated = entry.source == CatalogSource.DYNAMIC || entry.requiresProbe
+        when {
+            gated && probe != TemplateProbeState.OK -> {
                 _userMessage.tryEmit("模板校验未通过，暂不可切换")
+                return
+            }
+            !gated && probe == TemplateProbeState.LOAD_FAILED -> {
+                _userMessage.tryEmit("模型文件加载失败，暂不可切换，请重新下载或重新校验")
+                return
+            }
+            !gated && probe == null -> {
+                _userMessage.tryEmit("该模型尚未完成模板校验，请先点 ⓘ 重新校验")
                 return
             }
         }
@@ -213,7 +225,7 @@ class LocalModelsViewModel @Inject constructor(
 
     /**
      * 探针入口是否对该条目有意义：已下载即有资格（扩围后，老精选也算）。
-     * 老精选的手动探针结论只展示、不拦选用（选用门仍只认动态/设门条目）。
+     * 老精选的手动探针结论供行副行展示与选用门判定（只拦 LOAD_FAILED，未探过先探）。
      */
     fun canRevalidate(entry: CatalogEntry): Boolean {
         return dlStates.value[entry.id]?.status == LocalModelDownloadManager.DlStatus.COMPLETED
@@ -378,13 +390,17 @@ class LocalModelsViewModel @Inject constructor(
                     val completed = states[sel]?.status ==
                         LocalModelDownloadManager.DlStatus.COMPLETED
                     if (!completed) return@collect
-                    val needsGate = entry.source == CatalogSource.DYNAMIC || entry.requiresProbe
-                    if (!needsGate) return@collect
-                    when (val probe = probeStateOf(entry)) {
-                        TemplateProbeState.OK -> Unit // 探针通过，保留选中
-                        null -> Unit // 探针进行中，等下一次刷新
-                        else -> {
-                            if (sel !in handledProbeFailures) {
+                    // 顺延探针门扩到全部模型：OK / 未探过（null）保留选中——null 对设门条目是
+                    // 探针进行中，对老精选是祖父级已选（新选已由 requestSelect 把关），都不在此处回落；
+                    // 真加载失败全部回落；设门条目其他未通过也回落，老精选内嵌探针不过保留（内置模板）。
+                    val isGated = entry.source == CatalogSource.DYNAMIC || entry.requiresProbe
+                    val probe = probeStateOf(entry)
+                    val shouldFallback = when (probe) {
+                        TemplateProbeState.OK, null -> false
+                        TemplateProbeState.LOAD_FAILED -> true
+                        else -> isGated
+                    }
+                    if (shouldFallback && sel !in handledProbeFailures) {
                                 handledProbeFailures += sel
                                 val downloadedIds = states.values
                                     .filter { it.status == LocalModelDownloadManager.DlStatus.COMPLETED }
@@ -403,8 +419,6 @@ class LocalModelsViewModel @Inject constructor(
                                 _userMessage.tryEmit(
                                     "模板校验未通过，已取消选用 ${entry.displayName}",
                                 )
-                            }
-                        }
                     }
                 }
         }

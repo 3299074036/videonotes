@@ -210,8 +210,10 @@ class LocalModelDownloadManager @Inject constructor(
                     }
                 }
                 updateState(model.id) { ModelDlState(model.id, status, done, model.sizeBytes, error) }
-                if (status == DlStatus.COMPLETED && model.requiresProbe &&
-                    prefs.curatedProbeState(model) == null
+                // 探针扩到全部精选/影子模型：无有效结论即补探一次（老精选用无门读数，设门条目与旧读数一致；
+                // 动态模型走自己的注册表探针，不走这条路）
+                if (status == DlStatus.COMPLETED && model.source != CatalogSource.DYNAMIC &&
+                    prefs.curatedProbeStateForDisplay(model) == null
                 ) {
                     runCatching { templateProbe.probeCurated(model, prefs.fileFor(model)) }
                 }
@@ -223,9 +225,10 @@ class LocalModelDownloadManager @Inject constructor(
      * L-30 手动重新校验（扩围后）：对已下载条目强制重跑一次模板探针（不看旧结论
      * 是否为空，文件换了、结论丢了都能手动刷新）。动态条目走
      * [LocalLlmTemplateProbe.probe]，精选/影子条目走 probeCurated——老精选也
-     * 跑（内嵌探针），但结论只供 UI 展示，引擎探针门仍只认设门条目，老精选
-     * 的选用不受手动探针结果影响。探针本身在单线程探针调度上跑，失败只
-     * 返回 false，不抛到 UI。
+     * 跑（内嵌探针），结论供 UI 展示与选用门判定（老精选只拦 LOAD_FAILED，
+     * 未探过先探；内嵌探针不过不拦内置模板选用）。引擎生成时探针门仍只认
+     * 设门条目（已选模型不因没探过突然不能用）。探针本身在单线程探针调度
+     * 上跑，失败只返回 false，不抛到 UI。
      */
     suspend fun revalidateProbe(modelId: String): Boolean = withContext(Dispatchers.IO) {
         val model = prefs.resolveModel(modelId) ?: return@withContext false
@@ -259,9 +262,10 @@ class LocalModelDownloadManager @Inject constructor(
                 }
             }
             updateState(model.id) { ModelDlState(model.id, status, done, model.sizeBytes, error) }
-            // 已下载的设门条目若探针结论缺失（如探针曾被进程中断），启动时补探一次
-            if (status == DlStatus.COMPLETED && model.requiresProbe &&
-                prefs.curatedProbeState(model) == null
+            // 已下载精选/影子条目若探针结论缺失（如探针曾被进程中断），启动时补探一次（扩到全部精选/影子；
+            // 动态模型走下面自己的补探块）
+            if (status == DlStatus.COMPLETED && model.source != CatalogSource.DYNAMIC &&
+                prefs.curatedProbeStateForDisplay(model) == null
             ) {
                 runCatching { templateProbe.probeCurated(model, prefs.fileFor(model)) }
             }
@@ -278,8 +282,9 @@ class LocalModelDownloadManager @Inject constructor(
 
     /**
      * 下载后步骤：动态条目回填本地实算哈希（无官方 sha 时）并自动探针；
-     * 设探针门的精选条目（国内名单新收录）在探针无有效结论时自动探针一次。
-     * 失败静默（探针结论缺失时条目按「未校验」呈现，生成入口会拦）。
+     * 精选/影子条目在探针无有效结论时自动探针一次（扩到全部模型，老精选
+     * 结论供展示与选用门判定，内嵌探针不过不拦内置模板选用）。
+     * 失败静默（探针结论缺失时条目按「未校验」呈现，点选时门会拦）。
      */
     private suspend fun ensurePostDownloadSteps(model: LocalLlmModel) {
         if (model.source == CatalogSource.DYNAMIC) {
@@ -296,9 +301,9 @@ class LocalModelDownloadManager @Inject constructor(
                     templateProbe.probe(fresh)
                 }
             }
-        } else if (model.requiresProbe) {
+        } else {
             runCatching {
-                if (prefs.curatedProbeState(model) == null) {
+                if (prefs.curatedProbeStateForDisplay(model) == null) {
                     templateProbe.probeCurated(model, prefs.fileFor(model))
                 }
             }
