@@ -5,7 +5,6 @@ import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequest
 import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
@@ -97,18 +96,23 @@ fun transcribeUniqueName(storageKey: String): String = "transcribe_$storageKey"
 /** 笔记生成唯一任务名规则：generate_${storageKey}（顶层纯函数，JVM 可测）。 */
 fun generateUniqueName(storageKey: String): String = "generate_$storageKey"
 
-/** 构造转写请求（顶层纯函数，JVM 可测）。 */
+/**
+ * 构造转写请求（顶层纯函数，JVM 可测）。
+ *
+ * 注意：不再用 setExpedited()。加急任务会让系统起前台服务并掐 10 秒表，
+ * 10 秒内没调 startForeground() 就抛 ForegroundServiceDidNotStartInTimeException
+ * 直接杀 App（2026-10-25 实测崩溃）。普通任务没有这个计时器，崩溃类直接消失；
+ * 前台通知仍由 Worker 内的 safeSetForeground 尽力而为（失败只降级，不杀任务）。
+ */
 fun buildTranscribeRequest(video: VideoInfo): OneTimeWorkRequest =
     OneTimeWorkRequestBuilder<TranscribeWorker>()
         .setInputData(video.toInputData())
-        .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
         .build()
 
-/** 构造笔记生成请求（顶层纯函数，JVM 可测）。 */
+/** 构造笔记生成请求（顶层纯函数，JVM 可测；不加急，原因同上）。 */
 fun buildGenerateNoteRequest(video: VideoInfo): OneTimeWorkRequest =
     OneTimeWorkRequestBuilder<GenerateNoteWorker>()
         .setInputData(video.toInputData())
-        .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
         .build()
 
 /**

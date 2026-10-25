@@ -38,6 +38,9 @@ abstract class LongTaskWorker(
     final override suspend fun doWork(): Result {
         val tag = diagTag()
         WorkerDiagnosticLog.log(applicationContext, tag, "doWork entered")
+        // 前台通知第一时间挂上：普通任务下 setForeground 只是尽力而为的通知，
+        // 失败会被 safeSetForeground 吞掉降级，不会杀任务；但越早调，通知越及时。
+        safeSetForeground(notificationTitle(), -1f)
         return try {
             val result = doDiagnosedWork()
             WorkerDiagnosticLog.log(applicationContext, tag, "doWork returned $result")
@@ -63,7 +66,9 @@ abstract class LongTaskWorker(
         WorkerDiagnosticLog.log(applicationContext, diagTag(), message)
     }
 
-    /** 构造前台服务信息；progress < 0 表示不确定进度。 */
+    /** 构造前台服务信息；progress < 0 表示不确定进度。
+     * 通知 ID 按任务 storageKey 散列：多任务并发时各用各的通知，互不覆盖
+     *（此前全用固定 1001，多任务同时跑时通知互相顶掉、进度串台）。 */
     protected fun foregroundInfo(stageText: String, progress: Float): ForegroundInfo {
         val notification = LongTaskNotifications.build(
             applicationContext,
@@ -76,7 +81,13 @@ abstract class LongTaskWorker(
         } else {
             0
         }
-        return ForegroundInfo(LONG_TASK_NOTIFICATION_ID, notification, serviceType)
+        val storageKey = inputData.getString(KEY_STORAGE_KEY).orEmpty()
+        val notificationId = if (storageKey.isNotBlank()) {
+            2000 + (storageKey.hashCode().let { if (it < 0) -it else it } % 1000)
+        } else {
+            LONG_TASK_NOTIFICATION_ID
+        }
+        return ForegroundInfo(notificationId, notification, serviceType)
     }
 
     /**
