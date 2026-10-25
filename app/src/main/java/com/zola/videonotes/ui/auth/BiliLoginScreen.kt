@@ -125,9 +125,8 @@ private fun WebView.initBiliLoginWebView(
     settings.cacheMode = WebSettings.LOAD_DEFAULT
     // textZoom=100 即 Android 默认值，保留仅作显式声明（JKVideo 的 RN WebView 同为默认设置）。
     settings.textZoom = 100
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-        settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-    }
+    // H-05：删除 MIXED_CONTENT_ALWAYS_ALLOW，恢复默认 MIXED_CONTENT_NEVER_ALLOW。
+    // 登录页是用户输入账号密码处，HTTP 子资源可被 hostile 网络注入脚本窃取凭证。
     // 部分页面依赖 WebChromeClient 处理 JS 对话框/console，不设置会导致静默失败
     webChromeClient = WebChromeClient()
     webViewClient = object : WebViewClient() {

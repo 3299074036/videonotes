@@ -121,8 +121,9 @@ class GenerateNoteWorker @AssistedInject constructor(
                         ?: "${e.javaClass.simpleName}（无详细信息），请重试"
                     diag("failure: $msg")
                     llmLog("Worker：失败，错误=$msg")
-                    if (!isLocalEngine && isRetryable(msg)) {
-                        // 同 TranscribeWorker：重试耗尽后 outputData 为空，暂存到 progress 避免错误丢失。
+                    // H-03：次数上限见 MAX_RETRY_ATTEMPTS；耗尽后走 failure 分支，KEY_ERROR 保留。
+                    if (!isLocalEngine && isRetryable(msg) && runAttemptCount + 1 < MAX_RETRY_ATTEMPTS) {
+                        // 同 TranscribeWorker：重试中暂存错误到 progress，避免错误丢失。
                         setProgress(workDataOf(KEY_STAGE to "准备重试…", KEY_PROGRESS to -1f, KEY_ERROR to msg))
                         Result.retry()
                     } else {

@@ -201,21 +201,30 @@ class LocalLlmEngine @Inject constructor(
             else -> buildPrompt(messages, model.promptTemplate)
         }
         // prompt 构建完成：记 system/user 字符数与估算 token。
-        // 注意：这里是 chars/2 粗估——2026-10-24 实测 4176 token 的 prompt 在此只估出
-        // 约 2064，差约一倍（误导了用户对 prefill 速度的预期）；实际分词数以 JNI
-        // generate 开始行的 n_prompt 为准，生成汇总里也有实际 prefill token 数。
+        // 估算复用 TranscriptChunker（与切分同一口径：中文 1.5 字符/token）；2026-10-25 前
+        // 的 chars/2 粗估实测差约一倍（4176 token 只估出 2064），已废弃，见 L-28。
+        // 实际分词数以 JNI generate 开始行的 n_prompt 为准，生成汇总里也有实际 prefill token 数。
         val systemChars = messages.firstOrNull { it.role == "system" }?.content?.length ?: 0
         val userChars = messages.filter { it.role != "system" }.sumOf { it.content.length }
-        val estTokens = (systemChars + userChars) / 2
+        val estTokens = TranscriptChunker.estimateTokens(prompt)
         LlmDiagnosticLog.log(
             context, "llm",
-            "prompt 构建完成：system=${systemChars}字符，user=${userChars}字符，合计约${estTokens} tokens（chars/2 粗估；实际分词数见 generate 开始行的 n_prompt）",
+            "prompt 构建完成：system=${systemChars}字符，user=${userChars}字符，合计约${estTokens} tokens（实际分词数见 generate 开始行的 n_prompt）",
         )
         if (estTokens > 3000) {
             LlmDiagnosticLog.log(
                 context, "llm",
-                "提示：prompt 较长（约${estTokens} tokens 粗估），首批 prefill 可能需要数分钟，属正常现象；生成进行中请勿运行单 token 诊断探针",
+                "提示：prompt 较长（约${estTokens} tokens），首批 prefill 可能需要数分钟，属正常现象；生成进行中请勿运行单 token 诊断探针",
             )
+        }
+        // H-01：生成前校验：prompt 估算 + 输出上限不得超出上下文。超了直接失败并明示，
+        // 而不是花几分钟生成到一半被 JNI 截断（rc=17 是兜底）。本地上下文 N_CTX 已知，
+        // 此校验只做在本地引擎；云端各模型上下文不一，超限由服务端报 400。
+        if (estTokens + MAX_OUTPUT_TOKENS > N_CTX) {
+            val msg = "prompt 过长：预估 ${estTokens} token + 输出上限 $MAX_OUTPUT_TOKENS 已超出模型上下文 $N_CTX，" +
+                "请缩短文稿或更换大上下文模型"
+            LlmDiagnosticLog.log(context, "llm", "生成前校验失败：$msg")
+            return@withContext Result.failure(IOException(msg))
         }
         LlmDiagnosticLog.log(
             context, "llm",

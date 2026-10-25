@@ -8,6 +8,7 @@ import com.zola.videonotes.data.download.VideoDownloader
 import com.zola.videonotes.data.local.VideoDao
 import com.zola.videonotes.data.parser.KuaishouParser
 import com.zola.videonotes.data.parser.ParserRegistry
+import com.zola.videonotes.data.parser.XiaohongshuParser
 import com.zola.videonotes.data.player.PlayableStream
 import com.zola.videonotes.data.player.VideoStreamFetcher
 import com.zola.videonotes.data.reader.DeepLinkBuilder
@@ -137,7 +138,7 @@ class PlayerViewModel @Inject constructor(
                 mediaUrlArg.isNotBlank()
             ) {
                 val headers = when (video.platform) {
-                    Platform.XIAOHONGSHU -> xhsMediaHeaders()
+                    Platform.XIAOHONGSHU -> xhsMediaHeaders(mediaUrlArg)
                     else -> KuaishouParser.mediaHeaders()
                 }
                 _uiState.value = PlayerUiState.Ready(
@@ -169,10 +170,13 @@ class PlayerViewModel @Inject constructor(
      * 小红书播放请求头（YunX：缺 Referer/Cookie 就 403）。
      * Cookie 从凭证库现取，不经导航参数传递。
      */
-    private fun xhsMediaHeaders(): Map<String, String> = buildMap {
+    private fun xhsMediaHeaders(mediaUrl: String): Map<String, String> = buildMap {
         put("User-Agent", XhsAuthStore.XHS_DESKTOP_UA)
         put("Referer", "https://www.xiaohongshu.com/")
-        xhsAuthStore.webSession()?.let { put("Cookie", "web_session=$it") }
+        // M-15：与解析器同款白名单门禁，Cookie 只发往小红书自家域与 CDN 域。
+        if (XiaohongshuParser.isMediaHost(mediaUrl)) {
+            xhsAuthStore.webSession()?.let { put("Cookie", "web_session=$it") }
+        }
     }
 
     private suspend fun buildVideoInfo(storageKey: String): VideoInfo? {
@@ -202,7 +206,7 @@ class PlayerViewModel @Inject constructor(
             sourceUrl = sourceUrl,
             mediaUrl = mediaUrlArg,
             mediaHeaders = when (platform) {
-                Platform.XIAOHONGSHU -> xhsMediaHeaders()
+                Platform.XIAOHONGSHU -> xhsMediaHeaders(mediaUrlArg)
                 Platform.KUAISHOU -> KuaishouParser.mediaHeaders()
                 else -> emptyMap()
             },

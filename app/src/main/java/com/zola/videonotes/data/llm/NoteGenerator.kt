@@ -129,8 +129,14 @@ class NoteGenerator @Inject constructor(
                     system = system,
                     onProgress = onProgress,
                 ).getOrElse {
-                    llmLog("笔记生成失败：阶段=修正重试，错误=${it.message ?: it.javaClass.simpleName}")
-                    return Result.failure(it)
+                    if (it is FixInputTooLongException) {
+                        // H-02：修正输入超限不是生成失败：保留原文，后续流程剔除失败时间点并标注。
+                        llmLog("修正输入超限，已跳过修正，保留原文并剔除失败时间点")
+                        markdown
+                    } else {
+                        llmLog("笔记生成失败：阶段=修正重试，错误=${it.message ?: it.javaClass.simpleName}")
+                        return Result.failure(it)
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -227,23 +233,85 @@ class NoteGenerator @Inject constructor(
                 )
                 partials.add(partial)
             }
-            llmLog("reduce 开始（合并 ${partials.size} 段）")
+            reducePartials(partials, video, engine, system, onProgress)
+        }
+    }
+
+    /**
+     * H-02：递归 reduce。单次 reduce 的输入（partials 拼接 + 模板余量）超过引擎单遍上限时，
+     * 按 chunkTokens 分组、先组内 reduce、再对组结果递归 reduce，直到一次能装下为止。
+     * 每层都会缩小输入（组结果远短于组输入）；深度达上限仍装不下、或合并后未缩小，
+     * 直接失败并明示，不再像以前那样一次塞几万 token 导致 rc=12 失败或静默截断。
+     * partials 只有 1 段时直接返回该段，不再多跑一轮 reduce。
+     */
+    private suspend fun reducePartials(
+        partials: List<String>,
+        video: VideoInfo,
+        engine: LlmEngine,
+        system: String,
+        onProgress: (GenerateStage, Int) -> Unit,
+        depth: Int = 0,
+    ): Result<String> {
+        if (partials.isEmpty()) return Result.failure(IOException("没有可合并的分段结果"))
+        if (partials.size == 1) return Result.success(partials[0])
+        val joined = partials.joinToString("\n\n---\n\n")
+        val est = TranscriptChunker.estimateTokens(joined) + REDUCE_OVERHEAD_TOKENS
+        if (est <= engine.maxSingleTokens) {
+            llmLog("reduce 开始（合并 ${partials.size} 段，深度=$depth，预估约${est} token）")
             val t0 = System.currentTimeMillis()
             val user = promptLoader.render(
                 promptLoader.load("user_note_reduce.txt"),
                 mapOf(
                     "title" to video.title,
-                    "partials" to partials.joinToString("\n\n---\n\n"),
+                    "partials" to joined,
                 ),
             )
-            chat(engine, system, user, onProgress).also {
+            return chat(engine, system, user, onProgress).also {
                 llmLog(
                     "reduce 结束：耗时=${System.currentTimeMillis() - t0}ms，" +
                         (if (it.isSuccess) "输出约${it.getOrNull()?.length}字符" else "失败"),
                 )
             }
         }
+        if (depth >= MAX_REDUCE_DEPTH) {
+            return Result.failure(
+                IOException("文稿过长：递归合并 $MAX_REDUCE_DEPTH 层后仍超出单遍上限，请拆短视频或换大上下文模型"),
+            )
+        }
+        // 分组：每组拼接估算 ≤ chunkTokens；单段超限的独占一组（下层 size==1 直接返回，不再放大）。
+        val groups = mutableListOf<List<String>>()
+        var current = mutableListOf<String>()
+        var currentTokens = 0
+        for (partial in partials) {
+            val pt = TranscriptChunker.estimateTokens(partial)
+            if (current.isNotEmpty() && currentTokens + pt > engine.chunkTokens) {
+                groups.add(current)
+                current = mutableListOf()
+                currentTokens = 0
+            }
+            current.add(partial)
+            currentTokens += pt
+        }
+        if (current.isNotEmpty()) groups.add(current)
+        llmLog("reduce 分组：${partials.size} 段 → ${groups.size} 组（深度=$depth），组内先合并")
+        val groupResults = mutableListOf<String>()
+        for ((gi, group) in groups.withIndex()) {
+            llmLog("reduce 组 ${gi + 1}/${groups.size}（${group.size} 段）开始")
+            val r = reducePartials(group, video, engine, system, onProgress, depth + 1)
+            groupResults.add(r.getOrElse { return Result.failure(it) })
+        }
+        // 组结果总量必须小于本层输入，否则递归无法收敛（防御性检查）。
+        val shrunk = TranscriptChunker.estimateTokens(groupResults.joinToString("\n\n---\n\n"))
+        if (shrunk >= est) {
+            return Result.failure(
+                IOException("文稿过长：合并后未缩小（预估 ${shrunk} token），无法在上下文内完成，请拆短视频"),
+            )
+        }
+        return reducePartials(groupResults, video, engine, system, onProgress, depth + 1)
     }
+
+    /** 修正输入超限标记：调用方据此跳过修正而非整单失败（H-02）。 */
+    private class FixInputTooLongException(message: String) : IOException(message)
 
     /** 修正重试：列出失败时间戳 + 其前后 30 秒原文，要求模型只做最小修正。 */
     private suspend fun fixTimestamps(
@@ -274,6 +342,14 @@ class NoteGenerator @Inject constructor(
         )
         // 修正时附上原文，约束模型只做最小改动
         val fixSystem = system + "\n\n以下是需要修正的笔记正文，请基于它输出修正后的完整版本：\n\n$markdown"
+        // H-02：修正输入超限时不硬发（否则本地 rc=12 或云端 400，整单白跑）。
+        // 返回 FixInputTooLongException，由调用方跳过修正：保留原文，后续流程会剔除
+        // 失败时间点并标注「时间点待核实」，笔记本身不受影响。
+        val fixEst = TranscriptChunker.estimateTokens(fixSystem) + TranscriptChunker.estimateTokens(user)
+        if (fixEst > engine.maxSingleTokens) {
+            llmLog("修正输入超限（预估约${fixEst} token > 单遍上限 ${engine.maxSingleTokens}），跳过修正")
+            return Result.failure(FixInputTooLongException("修正输入过长（预估约${fixEst} token），已跳过修正"))
+        }
         return chat(engine, fixSystem, user, onProgress)
     }
 
@@ -323,6 +399,12 @@ class NoteGenerator @Inject constructor(
     companion object {
         /** 修正 prompt 中失败时间戳的上下文半径：前后 30 秒。 */
         private const val CONTEXT_MS = 30_000L
+
+        /** reduce 输入估算余量：模板 + 标题 + 分隔符（估算本身已含 partials 文本）。 */
+        private const val REDUCE_OVERHEAD_TOKENS = 500
+
+        /** 递归 reduce 最大深度：正常笔记 1–2 层即收敛，超深说明输入异常。 */
+        private const val MAX_REDUCE_DEPTH = 5
     }
 }
 

@@ -128,9 +128,8 @@ private fun WebView.initXhsLoginWebView(
     settings.textZoom = 100
     settings.useWideViewPort = true
     settings.loadWithOverviewMode = true
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-        settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-    }
+    // H-05：删除 MIXED_CONTENT_ALWAYS_ALLOW，恢复默认 MIXED_CONTENT_NEVER_ALLOW。
+    // 登录页是用户输入账号密码处，HTTP 子资源可被 hostile 网络注入脚本窃取凭证。
     // 桌面 UA：移动 UA 下 /login 是 404
     settings.userAgentString = XHS_DESKTOP_UA
     // 部分页面依赖 WebChromeClient 处理 JS 对话框/console，不设置会导致静默失败

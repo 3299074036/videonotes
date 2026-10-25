@@ -101,6 +101,8 @@ class CloudLlmEngine @Inject constructor(
                 onToken(token)
             },
             diag = diag,
+            // H-04：与本地 MAX_OUTPUT_TOKENS 对齐，云端单次输出同样封顶 3000 token。
+            maxTokens = 3000,
         )
         val totalMs = SystemClock.elapsedRealtime() - t0
         result.fold(

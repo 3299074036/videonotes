@@ -92,6 +92,8 @@ class LlmClient @Inject constructor(
         messages: List<ChatMessage>,
         onToken: (String) -> Unit,
         diag: LlmStreamDiag? = null,
+        // H-04：云端此前未设输出上限；与本地 MAX_OUTPUT_TOKENS 对齐为 3000，防长输出费用失控。
+        maxTokens: Int = 3000,
     ): Result<String> = withContext(Dispatchers.IO) {
         val url = "${baseUrl.trim().trimEnd('/')}/chat/completions"
         val bodyJson = gson.toJson(
@@ -100,6 +102,7 @@ class LlmClient @Inject constructor(
                 messages = messages,
                 temperature = LlmSettings.TEMPERATURE,
                 stream = true,
+                max_tokens = maxTokens,
             ),
         )
         val request = Request.Builder()
@@ -238,6 +241,8 @@ class LlmClient @Inject constructor(
         val messages: List<ChatMessage>,
         val temperature: Double,
         val stream: Boolean,
+        // H-04：Gson 按字段名原样序列化，即 "max_tokens"。
+        val max_tokens: Int,
     )
 
     private data class StreamChunk(

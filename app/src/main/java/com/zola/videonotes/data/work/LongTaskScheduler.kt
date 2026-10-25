@@ -1,6 +1,7 @@
 package com.zola.videonotes.data.work
 
 import android.content.Context
+import androidx.work.BackoffPolicy
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequest
@@ -48,6 +49,14 @@ const val KEY_NOTE_ID = "noteId"
 
 /** 失败输出：中文原因 */
 const val KEY_ERROR = "error"
+
+/**
+ * H-03：Worker 重试总次数上限（含首次执行）。runAttemptCount 从 0 起：
+ * 首次（0）与第 1 次重试（1）失败且可重试时 Result.retry()，第 2 次重试（2）失败则
+ * Result.failure 并保留 KEY_ERROR。此前无上限：持续性错误会长期反复重跑（整任务
+ * 从头重来：转写重下音频、生成重跑 LLM），耗电耗费且界面长期停在“准备重试…”。
+ */
+const val MAX_RETRY_ATTEMPTS = 3
 
 /** VideoInfo → Worker inputData。mediaHeaders 序列化为 JSON 字符串（Data 不支持 Map）。 */
 fun VideoInfo.toInputData(): Data = workDataOf(
@@ -107,12 +116,17 @@ fun generateUniqueName(storageKey: String): String = "generate_$storageKey"
 fun buildTranscribeRequest(video: VideoInfo): OneTimeWorkRequest =
     OneTimeWorkRequestBuilder<TranscribeWorker>()
         .setInputData(video.toInputData())
+        // H-03：显式退避（指数退避、初始 30s）。此前无 setBackoffCriteria 时用默认退避
+        // 且无次数上限（上限见各 Worker 的 runAttemptCount 门禁），持续性错误长期重跑。
+        .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
 /** 构造笔记生成请求（顶层纯函数，JVM 可测；不加急，原因同上）。 */
 fun buildGenerateNoteRequest(video: VideoInfo): OneTimeWorkRequest =
     OneTimeWorkRequestBuilder<GenerateNoteWorker>()
         .setInputData(video.toInputData())
+        // H-03：同转写，显式退避。
+        .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
 /**

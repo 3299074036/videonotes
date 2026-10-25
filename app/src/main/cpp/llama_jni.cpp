@@ -859,7 +859,13 @@ jint generate_impl(JNIEnv* env, LlamaHandle* h, const char* prompt_utf8,
                 }
             }
         }
-        if (n_past + 1 >= (int32_t) h->n_ctx) break;  // 上下文用尽，正常结束
+        if (n_past + 1 >= (int32_t) h->n_ctx) {
+            // H-01：上下文用尽不再按正常结束（rc=0）返回，否则半截笔记会被 Kotlin 侧
+            // 当成完整笔记存库。rc=17 为新增专属码，Kotlin 侧按 rc!=0 失败并透传本信息。
+            set_last_error("输出被上下文截断（prompt + 输出超出模型上下文长度）");
+            rc = 17;
+            break;
+        }
         fill_batch(&tok, 1, n_past);
         const int dec_ret = llama_decode(h->ctx, batch);
         if (dec_ret != 0) {

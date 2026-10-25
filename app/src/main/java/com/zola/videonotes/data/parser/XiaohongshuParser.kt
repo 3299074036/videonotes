@@ -226,7 +226,7 @@ class XiaohongshuParser @Inject constructor(
             //   重解析取新鲜直链，token 一丢就会撞登录墙、重解析失败（播不了的根因）。
             sourceUrl = sourceUrl,
             mediaUrl = stream.url.ensureHttps(),
-            mediaHeaders = mediaHeaders(cookie),
+            mediaHeaders = mediaHeaders(cookie, stream.url),
         )
     }
 
@@ -290,10 +290,12 @@ class XiaohongshuParser @Inject constructor(
     }
 
     /** 媒体请求头（直链播放/下载用：桌面 UA + Referer + Cookie）。 */
-    private fun mediaHeaders(cookie: String): Map<String, String> = buildMap {
+    private fun mediaHeaders(cookie: String, mediaUrl: String): Map<String, String> = buildMap {
         put("User-Agent", XHS_DESKTOP_UA)
         put("Referer", REFERER)
-        if (cookie.isNotBlank()) put("Cookie", cookie)
+        // M-15：Cookie 只发往白名单 host；直链 host 不在白名单时不带凭证（解析异常或
+        // 被劫持的重定向目标），避免 web_session 外泄到 CDN 之外的域及其重定向目标。
+        if (cookie.isNotBlank() && isMediaHost(mediaUrl)) put("Cookie", cookie)
     }
 
     /** 被登录墙拦下：调用方不再重试另一条路径，直接报可操作的提示。 */
@@ -331,6 +333,16 @@ class XiaohongshuParser @Inject constructor(
                 "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 
         private val XHS_HOSTS = listOf("xiaohongshu.com", "xhslink.com", "xhslink.cn")
+
+        /**
+         * M-15：小红书媒体直链 host 白名单。web_session 只发往小红书自家域与 CDN 域；
+         * 解析失败返回 false（fail-closed：不带 Cookie，播放/下载方再报可操作的错）。
+         */
+        fun isMediaHost(url: String): Boolean {
+            val host = runCatching { java.net.URI(url).host }.getOrNull()?.lowercase() ?: return false
+            return host == "xiaohongshu.com" || host.endsWith(".xiaohongshu.com") ||
+                host == "xhscdn.com" || host.endsWith(".xhscdn.com")
+        }
     }
 }
 

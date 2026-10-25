@@ -82,9 +82,9 @@ class TranscribeWorker @AssistedInject constructor(
                     val msg = e.message?.takeIf { it.isNotBlank() }
                         ?: "${e.javaClass.simpleName}（无详细信息），请重试"
                     diag("failure: $msg")
-                    if (isRetryable(msg)) {
-                        // 注意：重试次数耗尽后 WorkManager 标记 FAILED，但 outputData 为空，
-                        // 原始错误会丢失。先把错误暂存到 progress，界面可从 progress 读回，
+                    // H-03：次数上限见 MAX_RETRY_ATTEMPTS；耗尽后走 failure 分支，KEY_ERROR 保留。
+                    if (isRetryable(msg) && runAttemptCount + 1 < MAX_RETRY_ATTEMPTS) {
+                        // 重试中：先把错误暂存到 progress，界面可从 progress 读回，
                         // 避免用户只看到兜底文案无法定位问题。
                         setProgress(workDataOf(KEY_STAGE to "准备重试…", KEY_PROGRESS to -1f, KEY_ERROR to msg))
                         Result.retry()
