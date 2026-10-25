@@ -58,6 +58,15 @@ class VideoStreamFetcher @Inject constructor(
         when (video.platform) {
             Platform.YOUTUBE -> fetchYoutube(video)
             Platform.BILIBILI -> fetchBilibili(video)
+            // 抖音：解析器已通过 WebView 拿到直链，直接用（无需另取流）
+            Platform.DOUYIN -> {
+                val url = video.mediaUrl.takeIf { it.isNotBlank() }
+                if (url != null) {
+                    Result.success(PlayableStream(url, video.mediaHeaders))
+                } else {
+                    Result.failure(IOException("该抖音视频未解析到可播放的直链，请重新解析"))
+                }
+            }
             else -> Result.failure(IOException("${video.platform.displayName}暂不支持站内播放"))
         }
 

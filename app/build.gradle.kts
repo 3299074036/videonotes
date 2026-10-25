@@ -146,6 +146,9 @@ dependencies {
     // YouTube 视频解析
     implementation(libs.newpipe.extractor)
 
+    // 抖音解析：无头 WebView（AndroidX WebKit，DOCUMENT_START_SCRIPT 注入）
+    implementation(libs.androidx.webkit)
+
     // 端侧 ASR：sherpa-onnx 官方 AAR（已内置 onnxruntime，禁止再引入 onnxruntime-android）
     // AAR 由构建脚本从 GitHub Releases 拉取到 workspace 级 dependencies/sherpa-onnx/，不进 git
     implementation(files(rootProject.file("../../dependencies/sherpa-onnx/sherpa-onnx-1.13.8.aar")))

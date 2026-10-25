@@ -5,6 +5,7 @@ import androidx.work.Configuration
 import com.zola.videonotes.data.asr.AsrPreferences
 import com.zola.videonotes.data.llm.local.LlmCrashBreadcrumb
 import com.zola.videonotes.data.llm.local.LocalLlmPreferences
+import com.zola.videonotes.data.network.HeadlessWebViewTracker
 import com.zola.videonotes.data.work.VideoNotesWorkerFactory
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -34,6 +35,8 @@ class VideoNotesApp : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        // 抖音解析：无头 WebView 需挂在前台 Activity 的窗口上，这里追踪当前 resumed Activity
+        HeadlessWebViewTracker.install(this)
         // 最早安装全局崩溃捕获：闪退也落盘，用户可在设置页导出
         CrashHandler.install(this)
         // 模型目录预热解析（WP1）：assets 清单解析失败自动回退种子，不阻塞启动
