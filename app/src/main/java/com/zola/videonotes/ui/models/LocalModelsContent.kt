@@ -2,8 +2,8 @@ package com.zola.videonotes.ui.models
 
 import android.widget.Toast
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -248,45 +248,57 @@ private fun CatalogEntryRow(
                 text = entry.displayName,
                 modifier = Modifier.weight(1f),
             )
-            // 标签只保留「推荐」与绿色「已下载 ✓」（第二轮修订：实测徽标全部下架）
-            if (entry.source == CatalogSource.CURATED && entry.recommended) {
-                Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
-                RowMiniTag("推荐")
-            }
-            if (completed) {
-                Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
-                Text(
-                    text = "已下载 ✓",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = ColorDownloaded,
-                )
+            // 右侧固定列：徽标槽（推荐 / 已下载右对齐，缺失留空）→ ⓘ 固定位 →
+            // 动作槽（下载 / 删除右对齐），所有行的 ⓘ 与动作落在同一竖列上。
+            Box(
+                modifier = Modifier.width(ModelRowBadgeSlotWidth),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // 标签只保留「推荐」与绿色「已下载 ✓」（第二轮修订：实测徽标全部下架）
+                    if (entry.source == CatalogSource.CURATED && entry.recommended) {
+                        RowMiniTag("推荐")
+                    }
+                    if (completed) {
+                        if (entry.source == CatalogSource.CURATED && entry.recommended) {
+                            Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
+                        }
+                        Text(
+                            text = "已下载 ✓",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = ColorDownloaded,
+                        )
+                    }
+                }
             }
             // 每行 ⓘ：副行余项（来源档位 · 量化 · 体积 · 内存需求）与描述收进弹窗。
             TermInfoIcon(onClick = { showDetail = true })
             // 管理态：右侧动作位切换为编辑/移除；正常态保持下载/删除两态。
-            if (manageMode) {
-                TextButton(onClick = onEdit) { Text("编辑") }
-                TextButton(onClick = onRemove) {
-                    Text("移除", color = MaterialTheme.colorScheme.error)
-                }
-            } else {
-                // 右侧动作位严格只有两态：未下载「下载」、已下载「删除」。
-                // 下载中/已暂停/失败时右侧留空，状态与操作留在下方次级区。
-                when {
-                    completed -> TextButton(onClick = { vm.delete(entry.id) }) { Text("删除") }
-                    state.status == LocalModelDownloadManager.DlStatus.NOT_DOWNLOADED && !ramBlocked ->
-                        Text(
-                            text = "下载",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.clickable { vm.download(entry.id) },
-                        )
-                    state.status == LocalModelDownloadManager.DlStatus.NOT_DOWNLOADED && ramBlocked ->
-                        Text(
-                            text = "下载",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+            // 下载改成与删除同款 TextButton（同字号同内边距），两态右边缘对齐；
+            // 内存不足的下载用禁用态 TextButton（灰色不可点，与原来不可点的灰字同义）。
+            Box(
+                modifier = Modifier.width(
+                    if (manageMode) ModelRowManageActionSlotWidth else ModelRowActionSlotWidth,
+                ),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                if (manageMode) {
+                    Row {
+                        TextButton(onClick = onEdit) { Text("编辑") }
+                        TextButton(onClick = onRemove) {
+                            Text("移除", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                } else {
+                    // 右侧动作位严格只有两态：未下载「下载」、已下载「删除」。
+                    // 下载中/已暂停/失败时右侧留空，状态与操作留在下方次级区。
+                    when {
+                        completed -> TextButton(onClick = { vm.delete(entry.id) }) { Text("删除") }
+                        state.status == LocalModelDownloadManager.DlStatus.NOT_DOWNLOADED && !ramBlocked ->
+                            TextButton(onClick = { vm.download(entry.id) }) { Text("下载") }
+                        state.status == LocalModelDownloadManager.DlStatus.NOT_DOWNLOADED && ramBlocked ->
+                            TextButton(onClick = {}, enabled = false) { Text("下载") }
+                    }
                 }
             }
         }

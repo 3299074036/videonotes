@@ -26,7 +26,6 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -348,7 +347,7 @@ fun SettingsScreen(
                         subtitle = "未登录，登录后可获取需登录的字幕",
                         leading = { PlatformIcon(platform = Platform.BILIBILI, size = 28.dp) },
                         trailing = {
-                            Button(onClick = onBiliLoginClick) {
+                            TextButton(onClick = onBiliLoginClick) {
                                 Text("登录")
                             }
                         },
@@ -372,7 +371,7 @@ fun SettingsScreen(
                         subtitle = "未登录，登录后可解析小红书视频",
                         leading = { PlatformIcon(platform = Platform.XIAOHONGSHU, size = 28.dp) },
                         trailing = {
-                            Button(onClick = onXhsLoginClick) {
+                            TextButton(onClick = onXhsLoginClick) {
                                 Text("登录")
                             }
                         },

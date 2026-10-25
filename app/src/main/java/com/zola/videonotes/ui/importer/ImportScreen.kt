@@ -49,6 +49,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import coil3.request.crossfade
+import com.zola.videonotes.ui.components.PlatformIcon
 import com.zola.videonotes.ui.theme.VideoNotesTokens
 import kotlinx.coroutines.launch
 
@@ -258,14 +259,19 @@ private fun RecentImportRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                text = listOfNotNull(item.platform?.displayName, item.statusText)
-                    .joinToString(" · "),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                item.platform?.let {
+                    PlatformIcon(platform = it, size = 16.dp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
+                Text(
+                    text = item.statusText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }

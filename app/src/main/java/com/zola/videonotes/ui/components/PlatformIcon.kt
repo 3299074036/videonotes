@@ -1,8 +1,10 @@
 package com.zola.videonotes.ui.components
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -11,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -48,23 +51,51 @@ fun PlatformIcon(
         )
         return
     }
-    // 兜底简标：YouTube 红底 ▶、未知平台灰底问号
-    val (background, glyph) = when (platform) {
-        Platform.YOUTUBE -> Color(0xFFFF0000) to "▶"
-        else -> Color(0xFF9E9E9E) to "?"
+    // 兜底简标：YouTube 红底 Canvas 播放三角、未知平台灰底问号。
+    // YouTube 圆角按尺寸比例（约 22% 边长）：旧的文字 ▶ + 固定 6dp 圆角缩到 16–17dp
+    // 时圆角占比过大、三角糊成红坨；未知平台的灰底问号保持原样不动。
+    val background = when (platform) {
+        Platform.YOUTUBE -> Color(0xFFFF0000)
+        else -> Color(0xFF9E9E9E)
+    }
+    val corner = if (platform == Platform.YOUTUBE) {
+        RoundedCornerShape(size * 0.22f)
+    } else {
+        RoundedCornerShape(6.dp)
     }
     Box(
         modifier = modifier
             .size(size)
-            .clip(RoundedCornerShape(6.dp))
+            .clip(corner)
             .background(background),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = glyph,
-            color = Color.White,
-            fontWeight = FontWeight.Bold,
-            fontSize = (size.value * 0.5f).sp,
-        )
+        if (platform == Platform.YOUTUBE) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                // 注意：外层参数 size: Dp 会遮蔽 DrawScope.size，此处用 this.size 取绘制尺寸
+                val w = this.size.width
+                val h = this.size.height
+                // 播放三角：高为图标高度的 52%，按比例缩放，任何尺寸下都不糊；
+                // 包围盒中心略右于几何中心，抵消三角左侧底边的视觉重量。
+                val triH = h * 0.52f
+                val triW = triH * 0.85f
+                val cx = w / 2
+                val cy = h / 2
+                val path = Path().apply {
+                    moveTo(cx - triW * 0.4f, cy - triH / 2)
+                    lineTo(cx - triW * 0.4f, cy + triH / 2)
+                    lineTo(cx + triW * 0.6f, cy)
+                    close()
+                }
+                drawPath(path, Color.White)
+            }
+        } else {
+            Text(
+                text = "?",
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = (size.value * 0.5f).sp,
+            )
+        }
     }
 }

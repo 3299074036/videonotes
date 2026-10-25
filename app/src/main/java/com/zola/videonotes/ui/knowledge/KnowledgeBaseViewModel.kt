@@ -3,6 +3,7 @@ package com.zola.videonotes.ui.knowledge
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
+import com.zola.videonotes.data.knowledge.KnowledgeFilterPrefs
 import com.zola.videonotes.data.local.NoteDao
 import com.zola.videonotes.data.local.VideoDao
 import com.zola.videonotes.data.local.platformEnum
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /** 知识库条目：一条视频及其笔记/任务状态的聚合。 */
@@ -86,6 +88,7 @@ class KnowledgeBaseViewModel @Inject constructor(
     private val transcriptRepository: TranscriptRepository,
     private val parserRegistry: ParserRegistry,
     private val longTaskScheduler: LongTaskScheduler,
+    private val filterPrefs: KnowledgeFilterPrefs,
 ) : ViewModel() {
 
     private val _query = MutableStateFlow("")
@@ -96,6 +99,33 @@ class KnowledgeBaseViewModel @Inject constructor(
 
     fun onQueryChange(q: String) { _query.value = q }
     fun onFilterChange(f: KnowledgeFilter) { _filter.value = f }
+
+    /**
+     * 筛选 chip 顺序（持久化）：已存顺序在前，未出现的新平台按默认顺序补在末尾；
+     * “全部”恒为第一位，不在该列表里。
+     */
+    val filterOrder: StateFlow<List<KnowledgeFilter>> = filterPrefs.platformOrder
+        .map { saved ->
+            val ordered = saved.mapNotNull { p ->
+                KnowledgeFilter.entries.firstOrNull { it.platform == p }
+            }
+            val missing = KnowledgeFilter.entries.filter {
+                it.platform != null && it !in ordered
+            }
+            (ordered + missing).distinct()
+        }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            KnowledgeFilter.entries.filter { it.platform != null },
+        )
+
+    /** 拖动排序结束时持久化当前顺序（拖动过程中不写，只在松手时写一次）。 */
+    fun saveFilterOrder(order: List<KnowledgeFilter>) {
+        viewModelScope.launch {
+            filterPrefs.savePlatformOrder(order.mapNotNull { it.platform })
+        }
+    }
 
     /** 全部视频 → 条目（含笔记关联与每个视频的任务状态）。 */
     private val allEntries: Flow<List<KnowledgeEntry>> =

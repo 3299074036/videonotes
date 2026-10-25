@@ -1,8 +1,8 @@
 package com.zola.videonotes.ui.models
 
 import android.widget.Toast
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -729,38 +729,54 @@ private fun AsrModelRow(
                 text = item.model.displayName,
                 modifier = Modifier.weight(1f),
             )
-            // 标签只保留「推荐」与绿色「已下载 ✓」（第二轮修订：实测徽标全部下架）
-            if (catalogEntry?.recommended == true) {
-                Spacer(modifier = Modifier.width(VideoNotesTokens.Space4))
-                RowMiniTag("推荐")
-            }
-            if (completed) {
-                Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
-                Text(
-                    text = "已下载 ✓",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = ColorDownloaded,
-                )
+            // 右侧固定列：徽标槽（推荐 / 已下载右对齐，缺失留空）→ ⓘ 固定位 →
+            // 动作槽（下载 / 删除右对齐），所有行的 ⓘ 与动作落在同一竖列上。
+            Box(
+                modifier = Modifier.width(ModelRowBadgeSlotWidth),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // 标签只保留「推荐」与绿色「已下载 ✓」（第二轮修订：实测徽标全部下架）
+                    if (catalogEntry?.recommended == true) {
+                        RowMiniTag("推荐")
+                    }
+                    if (completed) {
+                        if (catalogEntry?.recommended == true) {
+                            Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
+                        }
+                        Text(
+                            text = "已下载 ✓",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = ColorDownloaded,
+                        )
+                    }
+                }
             }
             // 每行 ⓘ：副行余项（体积 · 时间戳说明）与描述收进弹窗。
             TermInfoIcon(onClick = { showDetail = true })
             // 管理态：右侧动作位切换为编辑/移除；正常态保持下载/删除两态。
-            if (manageMode) {
-                TextButton(onClick = onEdit) { Text("编辑") }
-                TextButton(onClick = onRemove) {
-                    Text("移除", color = MaterialTheme.colorScheme.error)
-                }
-            } else {
-                // 右侧动作位严格只有两态：未下载「下载」、已下载「删除」。
-                // 下载中/已暂停/失败时右侧留空，状态与操作留在下方次级区。
-                when {
-                    completed -> TextButton(onClick = onDelete) { Text("删除") }
-                    state.status == ModelDownloadManager.DlStatus.NOT_DOWNLOADED -> Text(
-                        text = "下载",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.clickable { onDownload() },
-                    )
+            // 下载改成与删除同款 TextButton（同字号同内边距），两态右边缘对齐。
+            Box(
+                modifier = Modifier.width(
+                    if (manageMode) ModelRowManageActionSlotWidth else ModelRowActionSlotWidth,
+                ),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                if (manageMode) {
+                    Row {
+                        TextButton(onClick = onEdit) { Text("编辑") }
+                        TextButton(onClick = onRemove) {
+                            Text("移除", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                } else {
+                    // 右侧动作位严格只有两态：未下载「下载」、已下载「删除」。
+                    // 下载中/已暂停/失败时右侧留空，状态与操作留在下方次级区。
+                    when {
+                        completed -> TextButton(onClick = onDelete) { Text("删除") }
+                        state.status == ModelDownloadManager.DlStatus.NOT_DOWNLOADED ->
+                            TextButton(onClick = onDownload) { Text("下载") }
+                    }
                 }
             }
         }

@@ -2,6 +2,7 @@ package com.zola.videonotes.ui.knowledge
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -40,6 +42,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -49,10 +54,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
@@ -65,6 +77,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
  * 知识库主页（纸上课堂）：衬线大标题 + 计数、纸面搜索框、筛选 chips、
@@ -243,22 +256,51 @@ fun KnowledgeBaseScreen(
                     .padding(horizontal = VideoNotesTokens.Space16),
             )
             Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
-            // 筛选 chips：平台分组（设计稿：全部 + 6 个平台小图标 chip，横向滚动）
+            // 筛选 chips：全部恒首位 + 平台 chip 长按拖动排序（顺序持久化到 DataStore）。
+            // 拖动用长按手势触发，不影响点按筛选与横向滚动；拖动中滚动暂停。
+            val persistedOrder by viewModel.filterOrder.collectAsStateWithLifecycle()
+            var displayOrder by remember(persistedOrder) { mutableStateOf(persistedOrder) }
+            var dragging by remember { mutableStateOf<KnowledgeFilter?>(null) }
+            var dragOffsetX by remember { mutableFloatStateOf(0f) }
+            val chipWidths = remember { mutableStateMapOf<KnowledgeFilter, Int>() }
+            var allChipWidth by remember { mutableIntStateOf(0) }
+            val density = LocalDensity.current
+            val haptic = LocalHapticFeedback.current
+            val filterScrollState = rememberScrollState()
+            val chipGapPx = with(density) { VideoNotesTokens.Space8.toPx() }
+            val rowStartPx = with(density) { VideoNotesTokens.Space16.toPx() }
+            // 平台 chip 区的起始 x：左 padding + “全部”chip 宽 + 间距
+            val platformStartPx = rowStartPx + allChipWidth + chipGapPx
+            // 某平台 chip 在 Row 内容里的左边缘 x（px）：起始 x + 之前 chip 宽 + 间距
+            fun chipLeftX(f: KnowledgeFilter): Float {
+                var x = platformStartPx
+                for (item in displayOrder) {
+                    if (item == f) break
+                    x += (chipWidths[item] ?: 0) + chipGapPx
+                }
+                return x
+            }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(VideoNotesTokens.Space8),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
+                    .horizontalScroll(filterScrollState, enabled = dragging == null)
                     .padding(horizontal = VideoNotesTokens.Space16),
             ) {
-                KnowledgeFilter.entries.forEach { f ->
+                FilterChip(
+                    selected = filter == KnowledgeFilter.ALL,
+                    onClick = { viewModel.onFilterChange(KnowledgeFilter.ALL) },
+                    label = { Text("全部") },
+                    modifier = Modifier.onSizeChanged { allChipWidth = it.width },
+                )
+                displayOrder.forEach { f ->
+                    val isDragging = dragging == f
                     FilterChip(
                         selected = filter == f,
                         onClick = { viewModel.onFilterChange(f) },
                         label = {
                             Text(
                                 when (f) {
-                                    KnowledgeFilter.ALL -> "全部"
                                     KnowledgeFilter.BILIBILI -> "哔哩哔哩"
                                     else -> f.platform?.displayName.orEmpty()
                                 },
@@ -267,6 +309,51 @@ fun KnowledgeBaseScreen(
                         leadingIcon = f.platform?.let { platform ->
                             { PlatformIcon(platform = platform, size = 17.dp) }
                         },
+                        modifier = Modifier
+                            .onSizeChanged { chipWidths[f] = it.width }
+                            .offset { IntOffset(if (isDragging) dragOffsetX.roundToInt() else 0, 0) }
+                            .zIndex(if (isDragging) 1f else 0f)
+                            .pointerInput(f) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = {
+                                        dragging = f
+                                        dragOffsetX = 0f
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    },
+                                    onDrag = { _, dragAmount ->
+                                        dragOffsetX += dragAmount.x
+                                        // 按拖动中心落点换位：中心落进哪个槽位就换到哪位
+                                        val center = chipLeftX(f) + dragOffsetX +
+                                            (chipWidths[f] ?: 0) / 2f
+                                        var acc = platformStartPx
+                                        var target = displayOrder.indexOf(f)
+                                        displayOrder.forEachIndexed { i, item ->
+                                            val w = chipWidths[item] ?: 0
+                                            if (center in acc..(acc + w)) target = i
+                                            acc += w + chipGapPx
+                                        }
+                                        val from = displayOrder.indexOf(f)
+                                        if (target != from) {
+                                            val oldX = chipLeftX(f)
+                                            displayOrder = displayOrder.toMutableList().apply {
+                                                removeAt(from)
+                                                add(target, f)
+                                            }
+                                            // 换位后把偏移量平移回去，拖动中的 chip 不跳变
+                                            dragOffsetX += oldX - chipLeftX(f)
+                                        }
+                                    },
+                                    onDragEnd = {
+                                        viewModel.saveFilterOrder(displayOrder)
+                                        dragging = null
+                                        dragOffsetX = 0f
+                                    },
+                                    onDragCancel = {
+                                        dragging = null
+                                        dragOffsetX = 0f
+                                    },
+                                )
+                            },
                     )
                 }
             }
