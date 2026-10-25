@@ -244,9 +244,18 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurface,
             )
 
-            // ---------- 生成笔记（2026-10-24 合并包由「大语言模型」改名） ----------
+            // ---------- 生成笔记（2026-10-25：与语音识别合并，顺序：提示词 → 引擎 → 大语言模型/云端 API → 识别模型） ----------
             SettingsGroup(title = "生成笔记") {
-                // 生成引擎：分段控件在行右侧同行呈现（本地在前，选中态 = 有效引擎）
+// 笔记提示词：自定义 system 提示词（本地 / 云端各存各的，一期只开放 system）
+                SettingsRow(
+                    title = "笔记提示词",
+                    subtitle = promptOverrideText.ifBlank { "读取中…" },
+                    onClick = onNavigateToPromptEditor,
+                    leading = { SettingsLinearIcon(Icons.Filled.Edit) },
+                    trailing = { SettingsChevron() },
+                )
+                SettingsDivider()
+// 生成引擎：分段控件在行右侧同行呈现（本地在前，选中态 = 有效引擎）
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -288,7 +297,7 @@ fun SettingsScreen(
                     )
                 }
                 SettingsDivider()
-                // 联动行：只显示有效引擎对应的一行
+// 联动行：只显示有效引擎对应的一行
                 if (effectiveEngineType == LlmEngineType.LOCAL) {
                     SettingsRow(
                         title = "大语言模型",
@@ -307,19 +316,7 @@ fun SettingsScreen(
                     )
                 }
                 SettingsDivider()
-                // 笔记提示词：自定义 system 提示词（本地 / 云端各存各的，一期只开放 system）
-                SettingsRow(
-                    title = "笔记提示词",
-                    subtitle = promptOverrideText.ifBlank { "读取中…" },
-                    onClick = onNavigateToPromptEditor,
-                    leading = { SettingsLinearIcon(Icons.Filled.Edit) },
-                    trailing = { SettingsChevron() },
-                )
-            }
-
-            // ---------- 语音识别 ----------
-            SettingsGroup(title = "语音识别") {
-                SettingsRow(
+SettingsRow(
                     title = "识别模型",
                     subtitle = asrModelText.ifBlank { "读取中…" },
                     onClick = { onNavigateToModels(Routes.SECTION_ASR) },

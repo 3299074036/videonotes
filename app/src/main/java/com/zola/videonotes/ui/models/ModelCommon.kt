@@ -1,15 +1,21 @@
 package com.zola.videonotes.ui.models
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Info
@@ -27,10 +33,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.zola.videonotes.domain.asr.formatBytes
 import com.zola.videonotes.ui.theme.VideoNotesTokens
 
@@ -127,16 +132,51 @@ fun TermInfoIcon(onClick: () -> Unit) {
 val ColorDownloaded = androidx.compose.ui.graphics.Color(0xFF1B7A3D)
 
 /**
- * 模型行右侧固定列宽（两页共用）：徽标槽（推荐 / 已下载右对齐，缺失留空）与
- * 动作槽（下载 / 删除右对齐），让所有行的 ⓘ 与动作落在同一竖列上，与名称长短、
- * 徽标有无无关。管理态动作槽放编辑 + 移除两个按钮，故更宽。
- * 宽度按内容实测收紧：徽标槽 88dp 容纳“推荐 + 已下载 ✓”两项；动作槽 52dp
- * 容纳删除 TextButton；管理态 108dp 容纳编辑 + 移除。上一版（104/72/116）
- * 吃掉了名称列宽度，导致 AutoFitName 缩到 12sp 下限仍放不下、名字被裁切。
+ * 模型行右侧固定列宽（两页共用）：动作槽（下载 / 删除右对齐）与管理态动作槽
+ * （编辑 + 移除两个按钮，故更宽），让所有行的 ⓘ 与动作落在同一竖列上。
+ * 宽度按内容实测收紧：动作槽 32dp 容纳两字裸文字（28dp）贴右，旧 52dp 左对齐
+ * 会在下载右侧留 24dp 空隙；管理态 108dp 容纳编辑 + 移除。
+ * 徽标（推荐 / 已下载）不再占固定槽，改为跟在名字后面 inline 排列。
+ * 名称固定 titleMedium 单行全显，不再逐档缩放。
  */
-val ModelRowBadgeSlotWidth = 88.dp
-val ModelRowActionSlotWidth = 52.dp
+val ModelRowActionSlotWidth = 32.dp
 val ModelRowManageActionSlotWidth = 108.dp
+
+/** 模型行首贴左单选框（2026-10-25）：24dp 盒子画 20dp 圆点，替代 Material3
+ * RadioButton 自带的 48dp 触摸盒（圆点两侧各 12dp 透明边，左边看起来空一截）。
+ * 行本身就是选择入口，24dp 点按区足够；禁用态降透明度、不可点。 */
+@Composable
+fun TightRadio(selected: Boolean, onClick: () -> Unit, enabled: Boolean = true) {
+    val alpha = if (enabled) 1f else 0.38f
+    val ring = if (selected) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.onSurfaceVariant
+    Box(
+        modifier = Modifier.size(ModelRowRadioSize)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier.size(20.dp)
+                .border(2.dp, ring.copy(alpha = alpha), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (selected) {
+                Box(
+                    modifier = Modifier.size(10.dp)
+                        .background(
+                            MaterialTheme.colorScheme.primary.copy(alpha = alpha),
+                            CircleShape,
+                        ),
+                )
+            }
+        }
+    }
+}
+
+/** 单选框盒子宽（24dp）与名间距（10dp）；副行缩进 = 两者之和，与名字左对齐。 */
+val ModelRowRadioSize = 24.dp
+val ModelRowRadioNameGap = 10.dp
+val ModelRowSecondaryIndent = ModelRowRadioSize + ModelRowRadioNameGap
 
 /** 用途筛选 chips 行（纸面 AssistChip，选中态品牌蓝；第二轮修订：单行横向滚动，不得换行）。 */
 @Composable
@@ -160,31 +200,6 @@ fun UseCaseChips(
 }
 
 /** 行标题旁的徽标（第二轮修订：仅保留「推荐」一轴；实测徽标全部下架）。 */
-/**
- * 行名单行自适应名：单行、永不截断省略号。名称独占 Row 剩余宽（调用处给 weight(1f)），
- * 放不下时字号从标题档逐档缩小（下限 12sp），保证全名显示在同一行；右侧 ⓘ 与动作
- * 因此始终贴右对齐。极端超长名触底仍放不下时直接裁切（不打省略号）。
- */
-@Composable
-fun AutoFitName(text: String, modifier: Modifier = Modifier) {
-    // 标题档字号须在 remember 外读取（remember 的计算块不是 @Composable 上下文）。
-    val baseSize = MaterialTheme.typography.titleMedium.fontSize
-    var fontSize by remember(text) { mutableStateOf(baseSize) }
-    Text(
-        text = text,
-        style = MaterialTheme.typography.titleMedium,
-        fontSize = fontSize,
-        maxLines = 1,
-        softWrap = false,
-        overflow = TextOverflow.Clip,
-        onTextLayout = { result ->
-            if (result.hasVisualOverflow && fontSize > 12.sp) {
-                fontSize *= 0.9f
-            }
-        },
-        modifier = modifier,
-    )
-}
 
 @Composable
 fun RowMiniTag(text: String) {

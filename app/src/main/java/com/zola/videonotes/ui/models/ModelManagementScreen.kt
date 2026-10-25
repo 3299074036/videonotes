@@ -34,7 +34,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -47,6 +46,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -719,44 +719,47 @@ private fun AsrModelRow(
         )
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space12))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            // 行首单选框：唯一的选择表达；未下载行也可勾选（合并包），选后不自动下载
-            RadioButton(
+            // 行首贴左单选框：唯一的选择表达；未下载行也可勾选（合并包），选后不自动下载
+            TightRadio(
                 selected = item.selected,
                 onClick = onSelect,
                 enabled = true,
             )
-            // 名称独占剩余宽＋字号自适应：单行完整显示，不打省略号；右侧由此贴右。
-            AutoFitName(
-                text = item.model.displayName,
+            Spacer(modifier = Modifier.width(ModelRowRadioNameGap))
+            // 名称 + 徽标同行：名字固定 titleMedium 单行全显，推荐 / 已下载 ✓ 紧贴名字后面；
+            // 容器占剩余宽，右侧 ⓘ 与动作由此贴右。
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.weight(1f),
-            )
-            // 右侧固定列：徽标槽（推荐 / 已下载右对齐，缺失留空）→ ⓘ 固定位 →
-            // 动作槽（下载 / 删除右对齐），所有行的 ⓘ 与动作落在同一竖列上。
-            Box(
-                modifier = Modifier.width(ModelRowBadgeSlotWidth),
-                contentAlignment = Alignment.CenterEnd,
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // 标签只保留「推荐」与绿色「已下载 ✓」（第二轮修订：实测徽标全部下架）
+                Text(
+                    text = item.model.displayName,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Clip,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                // 标签只保留「推荐」与绿色「已下载 ✓」（第二轮修订：实测徽标全部下架）
+                if (catalogEntry?.recommended == true) {
+                    Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
+                    RowMiniTag("推荐")
+                }
+                if (completed) {
                     if (catalogEntry?.recommended == true) {
-                        RowMiniTag("推荐")
+                        Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
                     }
-                    if (completed) {
-                        if (catalogEntry?.recommended == true) {
-                            Spacer(modifier = Modifier.width(VideoNotesTokens.Space8))
-                        }
-                        Text(
-                            text = "已下载 ✓",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = ColorDownloaded,
-                        )
-                    }
+                    Text(
+                        text = "已下载 ✓",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = ColorDownloaded,
+                    )
                 }
             }
             // 每行 ⓘ：副行余项（体积 · 时间戳说明）与描述收进弹窗。
             TermInfoIcon(onClick = { showDetail = true })
             // 管理态：右侧动作位切换为编辑/移除；正常态保持下载/删除两态。
-            // 下载、删除均为 153ac3d 的裸 Text（bodyMedium），同槽左对齐，三段间隙一致（12dp）。
+            // 下载、删除均为 153ac3d 的裸 Text（bodyMedium），32dp 动作槽贴右。
             Box(
                 modifier = Modifier.width(
                     if (manageMode) ModelRowManageActionSlotWidth else ModelRowActionSlotWidth,
@@ -778,88 +781,88 @@ private fun AsrModelRow(
                             text = "删除",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.align(Alignment.CenterStart)
-                                .clickable { onDelete() },
+                            modifier = Modifier.clickable { onDelete() },
                         )
                         state.status == ModelDownloadManager.DlStatus.NOT_DOWNLOADED ->
                             Text(
                                 text = "下载",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.align(Alignment.CenterStart)
-                                    .clickable { onDownload() },
+                                modifier = Modifier.clickable { onDownload() },
                             )
                     }
                 }
             }
         }
-        when (state.status) {
-            ModelDownloadManager.DlStatus.DOWNLOADING -> {
-                Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
-                LinearProgressIndicator(
-                    progress = { state.progress },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+        Column(modifier = Modifier.padding(start = ModelRowSecondaryIndent)) {
+            when (state.status) {
+                ModelDownloadManager.DlStatus.DOWNLOADING -> {
+                    Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
+                    LinearProgressIndicator(
+                        progress = { state.progress },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "下载中 ${(state.progress * 100).toInt()}% · " +
+                                "${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        // 管理态只管条目，不管下载：暂停回正常态操作。
+                        if (!manageMode) {
+                            TextButton(onClick = onPause) { Text("暂停") }
+                        }
+                    }
+                }
+                ModelDownloadManager.DlStatus.PAUSED -> {
+                    Spacer(modifier = Modifier.height(VideoNotesTokens.Space4))
                     Text(
-                        text = "下载中 ${(state.progress * 100).toInt()}% · " +
-                            "${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}",
+                        text = "已暂停 ${(state.progress * 100).toInt()}%，可断点续传",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    // 管理态只管条目，不管下载：暂停回正常态操作。
                     if (!manageMode) {
-                        TextButton(onClick = onPause) { Text("暂停") }
+                        Row {
+                            TextButton(onClick = onDownload) { Text("继续") }
+                            TextButton(onClick = onDelete) { Text("删除") }
+                        }
                     }
                 }
-            }
-            ModelDownloadManager.DlStatus.PAUSED -> {
-                Spacer(modifier = Modifier.height(VideoNotesTokens.Space4))
-                Text(
-                    text = "已暂停 ${(state.progress * 100).toInt()}%，可断点续传",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (!manageMode) {
-                    Row {
-                        TextButton(onClick = onDownload) { Text("继续") }
-                        TextButton(onClick = onDelete) { Text("删除") }
-                    }
-                }
-            }
-            ModelDownloadManager.DlStatus.FAILED -> {
-                Spacer(modifier = Modifier.height(VideoNotesTokens.Space4))
-                Text(
-                    text = state.error ?: "下载失败",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-                if (!manageMode) {
-                    Row {
-                        TextButton(onClick = onDownload) { Text("重试") }
-                        TextButton(onClick = onDelete) { Text("删除") }
-                    }
-                }
-            }
-            ModelDownloadManager.DlStatus.COMPLETED -> {
-                Text(
-                    text = "已下载 ${formatBytes(state.downloadedBytes)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            ModelDownloadManager.DlStatus.NOT_DOWNLOADED -> {
-                state.error?.let { err ->
+                ModelDownloadManager.DlStatus.FAILED -> {
                     Spacer(modifier = Modifier.height(VideoNotesTokens.Space4))
                     Text(
-                        text = err,
+                        text = state.error ?: "下载失败",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
+                    if (!manageMode) {
+                        Row {
+                            TextButton(onClick = onDownload) { Text("重试") }
+                            TextButton(onClick = onDelete) { Text("删除") }
+                        }
+                    }
+                }
+                ModelDownloadManager.DlStatus.COMPLETED -> {
+                    Text(
+                        text = "已下载 ${formatBytes(state.downloadedBytes)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                ModelDownloadManager.DlStatus.NOT_DOWNLOADED -> {
+                    state.error?.let { err ->
+                        Spacer(modifier = Modifier.height(VideoNotesTokens.Space4))
+                        Text(
+                            text = err,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
             }
         }
