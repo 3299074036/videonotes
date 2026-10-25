@@ -156,7 +156,7 @@ class DouyinParser @Inject constructor(
      * 不能只读 responseText：页面若把 responseType 设成 'json'，读 responseText 会抛
      * InvalidStateError（被 try 吞掉 → 钩子永远拿不到值，表现就是「一直不就绪」）。
      */
-    private const val XHR_DETAIL_HOOK_JS = """
+    private val XHR_DETAIL_HOOK_JS = """
 (function () {
   try {
     if (window.__yunxDetailHookInstalled) return;
@@ -228,7 +228,7 @@ class DouyinParser @Inject constructor(
      * 3. DOM 里的作品图 —— 最后兜底，拿不到动图资源（所以动图会退化成静态图）。
      * 不把整份详情（100KB+）回传：`evaluateJavascript` 传大字符串又慢又容易出问题，只回传必要字段。
      */
-    private const val EXTRACT_JS = """
+    private val EXTRACT_JS = """
 (function () {
   try {
     function firstUrl(node) {
