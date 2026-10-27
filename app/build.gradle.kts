@@ -23,8 +23,8 @@ android {
         applicationId = "com.zola.videonotes"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.0.2"
+        versionCode = 3
+        versionName = "0.0.3"
 
         // 项目约定 arm64 only：x86_64 仅模拟器调试用，不打进包
         ndk {
