@@ -137,6 +137,8 @@ dependencies {
 
     // JVM 单元测试
     testImplementation(libs.junit)
+    // P0：本地单测补真实 org.json（android.jar 里是空壳），仅测试用
+    testImplementation(libs.org.json)
 
     // 网络：Retrofit + OkHttp
     implementation(libs.retrofit.core)

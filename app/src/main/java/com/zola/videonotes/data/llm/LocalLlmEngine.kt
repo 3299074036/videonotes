@@ -77,6 +77,9 @@ class LocalLlmEngine @Inject constructor(
     /** 已加载的模型文件绝对路径（用于检测切换）。 */
     private var loadedPath: String? = null
 
+    /** 加载时生效的线程数覆盖值（null = 自动分档；与 lock 同步保护，供覆盖变化时重载判定）。 */
+    private var loadedThreadsOverride: Int? = null
+
     /** 当前模型 ID 缓存（checkReady/chatStream 中更新，供 systemPromptAsset 同步读取）。 */
     @Volatile
     private var cachedModelId: String = "qwen3-4b"
@@ -616,23 +619,17 @@ class LocalLlmEngine @Inject constructor(
     }
 
     /**
-     * 线程分档（仅 LLM 侧；ASR sherpa 不走此线程数）。
-     * 档位按待加载模型文件实际体积：≤2GiB → 4 线程；≤4GiB → 6 线程；>4GiB → 8 线程。
-     * n_threads_batch 与 n_threads 在 load_impl 的绑定关系保持不变。
-     */
-    private fun threadsForModelSize(bytes: Long): Int = when {
-        bytes <= 2L * 1024 * 1024 * 1024 -> 4
-        bytes <= 4L * 1024 * 1024 * 1024 -> 6
-        else -> 8
-    }
-
-    /**
      * 确保模型已加载。线程安全；重复调用直接返回已加载句柄。
      * 抛 IOException（native 错误信息）。
      */
     private fun ensureLoaded(path: String): Long {
         synchronized(lock) {
-            if (handle != 0L && loadedPath == path) return handle
+            // 用户在模型编辑里改的线程数覆盖：与加载时记下的覆盖值不一致时，
+            // 即使同一模型也要先卸载再重载，否则新线程数永远用不上。
+            val threadsOverride = prefs.threadOverrideForPath(path)
+            if (handle != 0L && loadedPath == path && threadsOverride == loadedThreadsOverride) {
+                return handle
+            }
             if (handle != 0L) {
                 try {
                     LlamaCpp.unloadModel(handle)
@@ -640,6 +637,7 @@ class LocalLlmEngine @Inject constructor(
                 }
                 handle = 0L
                 loadedPath = null
+                loadedThreadsOverride = null
             }
             // 先校验文件完整性：大小与预期差 5% 以上视为文件异常，
             // 避免加载损坏文件导致难以定位的 native 失败。
@@ -661,7 +659,8 @@ class LocalLlmEngine @Inject constructor(
             // 2026-10-17 的 hang 报告至此证伪。绑大核 512tok 结果未见，不做绑核。
             // 证据边界：8 线程结论目前只有 512tok 一批的单点实证，未全面验证无 hang；
             // 面包屑保留，供方案 T 日后复验。
-            val nThreads = threadsForModelSize(file.length())
+            // 用户手动覆盖优先于分档（模型编辑「推理设置」里设，null 即自动分档）。
+            val nThreads = resolveThreads(file.length(), threadsOverride)
             val t0 = SystemClock.elapsedRealtime()
             val h = LlamaCpp.loadModel(path, N_CTX, nThreads)
             val loadMs = SystemClock.elapsedRealtime() - t0
@@ -676,6 +675,7 @@ class LocalLlmEngine @Inject constructor(
             drainJniLogsToFile()
             handle = h
             loadedPath = path
+            loadedThreadsOverride = threadsOverride
             return h
         }
     }
@@ -733,6 +733,24 @@ class LocalLlmEngine @Inject constructor(
 
     companion object {
         private const val TAG = "VideoNotesLlm"
+
+        /**
+         * 线程分档（仅 LLM 侧；ASR sherpa 不走此线程数）。
+         * 档位按待加载模型文件实际体积：≤2GiB → 4 线程；≤4GiB → 6 线程；>4GiB → 8 线程。
+         * n_threads_batch 与 n_threads 在 load_impl 的绑定关系保持不变。
+         */
+        internal fun threadsForModelSize(bytes: Long): Int = when {
+            bytes <= 2L * 1024 * 1024 * 1024 -> 4
+            bytes <= 4L * 1024 * 1024 * 1024 -> 6
+            else -> 8
+        }
+
+        /**
+         * 最终线程数：用户手动覆盖（模型编辑「推理设置」）在 1–16 内时优先，
+         * 否则（未设或越界）回落自动分档。纯函数，供单测。
+         */
+        internal fun resolveThreads(fileSizeBytes: Long, override: Int?): Int =
+            if (override != null && override in 1..16) override else threadsForModelSize(fileSizeBytes)
 
         /** 本地单遍上限：4000 token（Qwen3-4B 在手机上 KV cache 与速度的平衡点）。 */
         const val MAX_SINGLE_TOKENS_LOCAL = 4000

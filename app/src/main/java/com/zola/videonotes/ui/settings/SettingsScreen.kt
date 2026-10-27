@@ -1,5 +1,7 @@
 package com.zola.videonotes.ui.settings
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,6 +43,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,6 +53,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.zola.videonotes.data.auth.YoutubeCookieStore
+import com.zola.videonotes.data.auth.parseNetscapeCookies
 import com.zola.videonotes.data.llm.LlmEngineType
 import com.zola.videonotes.data.theme.ThemeMode
 import com.zola.videonotes.domain.model.Platform
@@ -57,6 +62,9 @@ import com.zola.videonotes.ui.components.PaperSegmentedRow
 import com.zola.videonotes.ui.components.PlatformIcon
 import com.zola.videonotes.ui.navigation.Routes
 import com.zola.videonotes.ui.theme.VideoNotesTokens
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 设置页（纸上课堂）：衬线大字标题 + 纸面直铺分组清单——
@@ -103,6 +111,23 @@ fun SettingsScreen(
     var showYoutubeImport by remember { mutableStateOf(false) }
     var showYoutubeClearConfirm by remember { mutableStateOf(false) }
     var youtubeCookieInput by remember { mutableStateOf("") }
+    val youtubeFileScope = rememberCoroutineScope()
+    val youtubeFileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        youtubeFileScope.launch {
+            val header = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                }.getOrNull().orEmpty().let { parseNetscapeCookies(it, YoutubeCookieStore::isYoutubeHost) }
+            }
+            if (viewModel.importYoutubeCookie(header)) {
+                showYoutubeImport = false
+                youtubeCookieInput = ""
+            }
+        }
+    }
 
     if (showLogoutConfirm) {
         AlertDialog(
@@ -168,7 +193,7 @@ fun SettingsScreen(
                     )
                     Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
                     Text(
-                        text = "电脑浏览器（已登录 YouTube）导出整串 cookie，发到手机后粘贴。Cookie 只存本机加密存储，不会上传。",
+                        text = "电脑浏览器（已登录 YouTube）导出整串 cookie，发到手机后粘贴，也可以直接选浏览器导出的 cookies.txt 文件导入。Cookie 只存本机加密存储，不会上传。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -194,6 +219,7 @@ fun SettingsScreen(
                             },
                         ) { Text("清除", color = MaterialTheme.colorScheme.error) }
                     }
+                    TextButton(onClick = { youtubeFileLauncher.launch(arrayOf("*/*")) }) { Text("从文件导入") }
                     TextButton(onClick = { showYoutubeImport = false }) { Text("取消") }
                 }
             },

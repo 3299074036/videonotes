@@ -213,6 +213,19 @@ class LocalLlmPreferences @Inject constructor(
         return expectedSizeForFileName(path.substringAfterLast('/'))
     }
 
+    /**
+     * 按完整路径反查用户设的线程数覆盖：新布局路径含条目 id 目录，优先按 id 查用户条目
+     * （改过或自定义的条目才在用户目录里，未改过的精选条目返回 null 即自动分档）；
+     * 旧平铺路径无 id 目录时回退文件名反查。同步读，供引擎加载时直接用。
+     */
+    fun threadOverrideForPath(path: String): Int? {
+        val parentName = path.substringBeforeLast('/').substringAfterLast('/')
+        UserCatalog.entryFor(parentName)?.threadsOverride?.let { return it }
+        val fileName = path.substringAfterLast('/')
+        val id = resolveAllModels().firstOrNull { it.fileName == fileName }?.id ?: return null
+        return UserCatalog.entryFor(id)?.threadsOverride
+    }
+
     /** 动态条目当前有效的探针结论（指纹一致才算数）；非动态条目返回 null。 */
     fun dynamicProbeState(model: LocalLlmModel): TemplateProbeState? {
         if (model.source != CatalogSource.DYNAMIC) return null

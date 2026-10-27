@@ -241,6 +241,13 @@ class MetadataViewModel @Inject constructor(
     private val _subtitleState = MutableStateFlow<SubtitleUiState>(SubtitleUiState.NotFetched())
     val subtitleState: StateFlow<SubtitleUiState> = _subtitleState.asStateFlow()
 
+    /**
+     * 本轮字幕未获取的原因（工序页诊断用）：字幕取空或取失败后转写兜底时，
+     * 工序单第 3 步据此写明原因，不再静默转写。字幕取到 / 新一轮开始时清零。
+     */
+    private val _subtitleFallbackReason = MutableStateFlow<String?>(null)
+    val subtitleFallbackReason: StateFlow<String?> = _subtitleFallbackReason.asStateFlow()
+
     private val _transcribeState = MutableStateFlow<TranscribeUiState>(TranscribeUiState.Idle)
     val transcribeState: StateFlow<TranscribeUiState> = _transcribeState.asStateFlow()
 
@@ -600,6 +607,7 @@ class MetadataViewModel @Inject constructor(
     private fun load() {
         _uiState.value = MetadataUiState.Loading
         _subtitleState.value = SubtitleUiState.NotFetched()
+        _subtitleFallbackReason.value = null
         _transcribeState.value = TranscribeUiState.Idle
         _generateState.value = GenerateNoteUiState.Idle
         transcribeObserveJob?.cancel()
@@ -662,17 +670,23 @@ class MetadataViewModel @Inject constructor(
         val info = (uiState.value as? MetadataUiState.Success)?.info ?: return
         if (_subtitleState.value is SubtitleUiState.Loading) return
         _subtitleState.value = SubtitleUiState.Loading()
+        _subtitleFallbackReason.value = null
         viewModelScope.launch {
             transcriptRepository.fetchAndStore(info)
                 .onSuccess { result ->
-                    _subtitleState.value = if (result.segments.isEmpty()) {
-                        SubtitleUiState.NotFetched("该视频暂无官方字幕，可尝试下方的语音转写")
+                    if (result.segments.isEmpty()) {
+                        _subtitleState.value =
+                            SubtitleUiState.NotFetched("该视频暂无字幕，可尝试下方的语音转写")
+                        _subtitleFallbackReason.value =
+                            "${info.platform.displayName}未返回字幕轨道"
                     } else {
-                        SubtitleUiState.Fetched(result)
+                        _subtitleState.value = SubtitleUiState.Fetched(result)
+                        _subtitleFallbackReason.value = null
                     }
                 }
                 .onFailure {
                     _subtitleState.value = SubtitleUiState.Failed(it.message ?: "字幕获取失败，请重试")
+                    _subtitleFallbackReason.value = it.message ?: "字幕获取失败，请重试"
                 }
         }
     }

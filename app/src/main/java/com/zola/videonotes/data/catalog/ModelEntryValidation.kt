@@ -30,6 +30,8 @@ data class EntryDraft(
     val minRamGB: Double?,
     val description: String,
     val files: List<EntryFileDraft>,
+    /** 本地 LLM 推理线程数覆盖：null = 自动分档；仅 LLM 条目有效。 */
+    val threadsOverride: Int? = null,
 )
 
 data class ValidationError(
@@ -101,6 +103,11 @@ fun validateEntryDraft(
     }
     if (draft.minRamGB != null && draft.minRamGB <= 0.0) {
         errors += ValidationError("minRamGB", "最低内存须大于 0")
+    }
+    if (draft.kind == CatalogKind.LLM && draft.threadsOverride != null &&
+        draft.threadsOverride !in 1..16
+    ) {
+        errors += ValidationError("threads", "线程数须为 1–16 的整数")
     }
     if (draft.files.isEmpty()) {
         errors += ValidationError("files", "至少添加一个文件")
@@ -197,5 +204,6 @@ fun EntryDraft.toEntry(recommended: Boolean, source: CatalogSource): CatalogEntr
         },
         recommended = recommended,
         minRamGB = minRamGB,
+        threadsOverride = threadsOverride,
         source = source,
     )

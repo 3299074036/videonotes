@@ -10,6 +10,7 @@ import com.zola.videonotes.data.asr.ModelDownloadManager
 import com.zola.videonotes.data.auth.BiliAuthStore
 import com.zola.videonotes.data.auth.XhsAuthStore
 import com.zola.videonotes.data.auth.YoutubeCookieStore
+import com.zola.videonotes.data.auth.validateYoutubeCookie
 import com.zola.videonotes.data.llm.LlmCredentialStore
 import com.zola.videonotes.data.llm.LlmEngineResolver
 import com.zola.videonotes.data.llm.PromptOverrides
@@ -239,17 +240,31 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
-     * 导入 YouTube cookie：格式不对返回 false（界面保留对话框，让用户修正重贴）；
-     * 格式通过返回 true（界面关闭对话框），保存走 IO 线程，结果经 Snackbar 告知。
+     * 导入 YouTube cookie：校验不过返回 false（界面保留对话框，让用户修正）；
+     * 通过返回 true（界面关闭对话框），保存走 IO 线程，结果经 Snackbar 告知。
+     *
+     * P1：旧校验只要一对键值就放行，残缺串也能存；现分三档——
+     * 无可用键值 → 格式不对；缺 SID / LOGIN_INFO → 不完整拒存并点名缺项；
+     * 只缺 HSID / SSID / APISID / SAPISID → 存入但提示缺项，不静默。
+     * 校验失败不写存储、不改已导入状态。
      */
     fun importYoutubeCookie(cookie: String): Boolean {
-        if (!YoutubeCookieStore.isValidCookie(cookie)) {
+        val check = validateYoutubeCookie(cookie)
+        if (check.isMalformed) {
             _message.value = "cookie 格式不对，请粘贴从浏览器复制的整串 cookie"
+            return false
+        }
+        if (check.missingRequired.isNotEmpty()) {
+            _message.value = "cookie 不完整，缺：${check.missingRequired.joinToString("、")}，请导出完整 cookie 后重新导入"
             return false
         }
         viewModelScope.launch {
             withContext(Dispatchers.IO) { youtubeCookieStore.save(cookie) }
-            _message.value = "YouTube cookie 已导入"
+            _message.value = if (check.missingRecommended.isNotEmpty()) {
+                "YouTube cookie 已导入，但缺：${check.missingRecommended.joinToString("、")}，建议导出完整 cookie"
+            } else {
+                "YouTube cookie 已导入"
+            }
         }
         return true
     }

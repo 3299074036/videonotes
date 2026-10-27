@@ -61,7 +61,7 @@ class DouyinParser @Inject constructor(
             val cleanUrl = extractFirstUrl(url) ?: url.trim()
             val finalUrl = redirects.resolve(cleanUrl)
             val videoId = videoIdPattern.find(finalUrl)?.groupValues?.get(1)
-                ?: throw IOException("未能从抖音链接中识别视频 ID：分享页结构可能已变化")
+                ?: throw ParseException(ParseErrorKind.INVALID_LINK, "未能从抖音链接中识别视频 ID：分享页结构可能已变化")
             val type = typePattern.find(finalUrl)?.groupValues?.get(1)
                 ?.takeIf { it == "note" } ?: "video"
             // 主路线：隐藏 WebView 真跑一遍页面
@@ -74,7 +74,7 @@ class DouyinParser @Inject constructor(
             // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
             throw e
         } catch (t: Throwable) {
-            Result.failure(IOException("抖音解析失败：${t.message ?: t.javaClass.simpleName}"))
+            Result.failure(ParseException(ParseErrorKind.UNKNOWN, "抖音解析失败：${t.message ?: t.javaClass.simpleName}"))
         }
     }
 
@@ -138,7 +138,7 @@ class DouyinParser @Inject constructor(
         )
         // 图文：视记只做视频笔记，明确告知不支持（而非静默失败）
         if (payload.images.isNotEmpty()) {
-            throw IOException("该抖音内容为图文笔记（${payload.images.size} 张图），暂不支持转写生成笔记")
+            throw ParseException(ParseErrorKind.UNSUPPORTED, "该抖音内容为图文笔记（${payload.images.size} 张图），暂不支持转写生成笔记")
         }
         return VideoInfo(
             platform = Platform.DOUYIN,
@@ -436,7 +436,7 @@ class DouyinParser @Inject constructor(
             try {
                 val html = fetchHtml(shareUrl, ttwid)
                 val routerJson = extractInlineJson(html, "window._ROUTER_DATA")
-                    ?: throw IOException("抖音分享页里没有 window._ROUTER_DATA（作品可能已删除或页面改版）")
+                    ?: throw ParseException(ParseErrorKind.UNKNOWN, "抖音分享页里没有 window._ROUTER_DATA（作品可能已删除或页面改版）")
                 val data = extractVideoData(routerJson, videoId)
                 return Result.success(buildFromHttpData(data, videoId, sourceUrl))
             } catch (e: IOException) {
@@ -445,7 +445,7 @@ class DouyinParser @Inject constructor(
                 if (attempt == 1) throw e
             }
         }
-        throw IOException("抖音解析失败")
+        throw ParseException(ParseErrorKind.UNKNOWN, "抖音解析失败")
     }
 
     private suspend fun fetchHtml(url: String, ttwid: String): String = withContext(Dispatchers.IO) {
@@ -458,7 +458,7 @@ class DouyinParser @Inject constructor(
             .build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IOException("抖音分享页请求失败（HTTP ${response.code}），可能触发平台风控")
+                throw ParseException(ParseErrorClassifier.http(response.code), "抖音分享页请求失败（HTTP ${response.code}），可能触发平台风控")
             }
             response.body?.stringCapped().orEmpty()
         }
@@ -500,12 +500,12 @@ class DouyinParser @Inject constructor(
      */
     private fun extractVideoData(routerJson: String, expectedId: String): JSONObject {
         val router = runCatching { JSONObject(routerJson) }.getOrNull()
-            ?: throw IOException("window._ROUTER_DATA 不是合法 JSON")
+            ?: throw ParseException(ParseErrorKind.UNKNOWN, "window._ROUTER_DATA 不是合法 JSON")
         val loaderData = router.optJSONObject("loaderData")
-            ?: throw IOException("window._ROUTER_DATA 里没有 loaderData")
+            ?: throw ParseException(ParseErrorKind.UNKNOWN, "window._ROUTER_DATA 里没有 loaderData")
         val page = loaderData.optJSONObject("video_(id)/page")
             ?: loaderData.optJSONObject("note_(id)/page")
-            ?: throw IOException("window._ROUTER_DATA 里既没有 video_(id)/page 也没有 note_(id)/page")
+            ?: throw ParseException(ParseErrorKind.UNKNOWN, "window._ROUTER_DATA 里既没有 video_(id)/page 也没有 note_(id)/page")
         val videoInfoRes = page.optObjectAny("videoInfoRes", "video_info_res")
         val itemList = videoInfoRes?.optArrayAny("item_list", "itemList")
         itemList?.optJSONObject(0)?.let { return it }
@@ -517,7 +517,7 @@ class DouyinParser @Inject constructor(
             append(", 请求id=").append(expectedId)
             append(", isSpider=").append(page.optBoolean("isSpider"))
         }
-        throw IOException("抖音没有返回该作品的数据（作品可能已删除或不可见，也可能被风控拦截）[$detail]")
+        throw ParseException(ParseErrorKind.UNKNOWN, "抖音没有返回该作品的数据（作品可能已删除或不可见，也可能被风控拦截）[$detail]")
     }
 
     /** 从 HTTP 路线的数据拼 VideoInfo（视频走无水印探测，图文返回图片数提示）。 */
@@ -531,7 +531,7 @@ class DouyinParser @Inject constructor(
         val images = data.optArrayAny("images")
         val video = data.optObjectAny("video")
         if (images != null && images.length() > 0) {
-            throw IOException("该抖音内容为图文笔记（${images.length()} 张图），暂不支持转写生成笔记")
+            throw ParseException(ParseErrorKind.UNSUPPORTED, "该抖音内容为图文笔记（${images.length()} 张图），暂不支持转写生成笔记")
         }
         if (video != null) {
             val resolved = resolveVideo(video, mediaHeaders)
@@ -549,7 +549,7 @@ class DouyinParser @Inject constructor(
                 )
             }
         }
-        throw IOException("抖音分享页未返回可用视频数据")
+        throw ParseException(ParseErrorKind.UNKNOWN, "抖音分享页未返回可用视频数据")
     }
 
     /** 无水印解析（仅 HTTP 回退路线用）：优先探 play 端点，探不到则 playwm→play 回退。 */
@@ -641,7 +641,7 @@ class DouyinParser @Inject constructor(
         }
         response.use { resp ->
             if (!resp.isSuccessful) {
-                throw IOException("ttwid 注册失败（HTTP ${resp.code}）")
+                throw ParseException(ParseErrorClassifier.http(resp.code), "ttwid 注册失败（HTTP ${resp.code}）")
             }
             val registered = resp.headers.values("Set-Cookie").firstNotNullOfOrNull { extractTtwid(it) }
             val redirectUrl = try {

@@ -41,12 +41,12 @@ class BilibiliParser @Inject constructor(
             val bvid = bvPattern.find(finalUrl)?.groupValues?.get(1)
             val aid = avPattern.find(finalUrl)?.groupValues?.get(1)?.toLongOrNull()
             if (bvid == null && aid == null) {
-                throw IOException("未能从链接中识别出 BV 号或 AV 号，请确认是有效的 B站视频链接")
+                throw ParseException(ParseErrorKind.INVALID_LINK, "未能从链接中识别出 BV 号或 AV 号，请确认是有效的 B站视频链接", appendHint = false)
             }
             val response = if (bvid != null) api.view(bvid = bvid) else api.view(aid = aid)
             val data = response.data
             if (response.code != 0 || data == null) {
-                throw IOException("B站接口返回异常（code=${response.code}）：${response.message.ifBlank { "视频可能不存在、无权访问或为付费内容" }}")
+                throw ParseException(ParseErrorClassifier.bilibili(response.code, response.message), "B站接口返回异常（code=${response.code}）：${response.message.ifBlank { "视频可能不存在、无权访问或为付费内容" }}")
             }
             Result.success(
                 VideoInfo(
@@ -68,7 +68,7 @@ class BilibiliParser @Inject constructor(
             // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
             throw e
         } catch (t: Throwable) {
-            Result.failure(IOException("B站解析失败：${t.message ?: t.javaClass.simpleName}，请检查链接或稍后重试"))
+            Result.failure(ParseException(ParseErrorKind.UNKNOWN, "B站解析失败：${t.message ?: t.javaClass.simpleName}"))
         }
     }
 }

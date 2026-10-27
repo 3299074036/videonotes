@@ -93,6 +93,7 @@ fun MetadataScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val subtitleState by viewModel.subtitleState.collectAsStateWithLifecycle()
+    val subtitleFallbackReason by viewModel.subtitleFallbackReason.collectAsStateWithLifecycle()
     val transcribeState by viewModel.transcribeState.collectAsStateWithLifecycle()
     val generateState by viewModel.generateState.collectAsStateWithLifecycle()
     val existingNoteId by viewModel.existingNoteId.collectAsStateWithLifecycle()
@@ -311,7 +312,7 @@ fun MetadataScreen(
                     // 工序单推导：四步状态来自既有 UI 状态 + 编排状态（阻塞步）
                     val stepsUi = remember(
                         subtitleState, transcribeState, generateState,
-                        existingNoteId, pipelineState,
+                        existingNoteId, pipelineState, subtitleFallbackReason,
                     ) {
                         deriveProcessSteps(
                             info = state.info,
@@ -320,6 +321,7 @@ fun MetadataScreen(
                             generateState = generateState,
                             existingNoteId = existingNoteId,
                             pipelineState = pipelineState,
+                            subtitleFallbackReason = subtitleFallbackReason,
                         )
                     }
                     // 工序单当前步的日志预览：生成中取 LLM 日志、转写中取 Worker 日志，互为兜底；
@@ -483,6 +485,15 @@ private fun MetadataHeader(
         Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
         Text(
             text = "本视频共 ${info.partCount} 分P，当前仅处理第 1 分P（字幕、转写与笔记均以 P1 为准）",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    // P4：仅元数据标记——无播放地址，不能播放、转写或下载，必须明示，不能当成可播视频展示。
+    if (info.isMetadataOnly) {
+        Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
+        Text(
+            text = "仅拿到元数据，无法播放、转写或下载（可能被平台风控），可换网络或重新导入 cookie 后重试",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

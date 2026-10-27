@@ -54,6 +54,8 @@ data class CatalogEntry(
     val downloadCount: Long? = null,
     /** 所需整机内存下限（GB，总内存口径）；动态条目按经验式估算（C6）。 */
     val minRamGB: Double? = null,
+    /** 本地 LLM 推理线程数覆盖：null = 自动（按模型文件大小分档）；仅 LLM 条目有效，ASR 不走此项。 */
+    val threadsOverride: Int? = null,
     val source: CatalogSource = CatalogSource.CURATED,
     /** 动态条目来源仓库 "owner/repo"；精选条目由首文件 URL 推导（C10 去重用）。 */
     val hfRepo: String? = null,

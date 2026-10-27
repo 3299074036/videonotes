@@ -59,25 +59,25 @@ class WeiboParser @Inject constructor(
             // 展开后仍无匹配则按不支持处理（与规格一致）。
             val target = if (TCN_REGEX.containsMatchIn(cleanUrl)) {
                 runCatching { redirects.resolve(cleanUrl) }.getOrNull()
-                    ?: throw IOException("分享链接已失效，请重新复制")
+                    ?: throw ParseException(ParseErrorKind.INVALID_LINK, "分享链接已失效，请重新复制", appendHint = false)
             } else {
                 cleanUrl
             }
             val (kind, id) = classify(target)
-                ?: throw IOException("暂不支持的微博链接")
+                ?: throw ParseException(ParseErrorKind.UNSUPPORTED, "暂不支持的微博链接", appendHint = false)
             val info = when (kind) {
                 "status" -> parseStatus(target, id)
                 "tv" -> {
                     val weiboId = try {
                         mid2id(id)
                     } catch (e: Exception) {
-                        throw IOException("不支持的 tv 链接")
+                        throw ParseException(ParseErrorKind.UNSUPPORTED, "不支持的 tv 链接", appendHint = false)
                     }
-                    if (weiboId.isBlank()) throw IOException("不支持的 tv 链接")
+                    if (weiboId.isBlank()) throw ParseException(ParseErrorKind.UNSUPPORTED, "不支持的 tv 链接", appendHint = false)
                     parseStatus(target, weiboId)
                 }
                 "fid" -> parseFid(target, id)
-                else -> throw IOException("暂不支持的微博链接")
+                else -> throw ParseException(ParseErrorKind.UNSUPPORTED, "暂不支持的微博链接", appendHint = false)
             }
             Result.success(info)
         } catch (e: IOException) {
@@ -86,7 +86,7 @@ class WeiboParser @Inject constructor(
             // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
             throw e
         } catch (t: Throwable) {
-            Result.failure(IOException("微博解析失败：${t.message ?: t.javaClass.simpleName}"))
+            Result.failure(ParseException(ParseErrorKind.UNKNOWN, "微博解析失败：${t.message ?: t.javaClass.simpleName}"))
         }
     }
 
@@ -134,21 +134,21 @@ class WeiboParser @Inject constructor(
         }
         when (code) {
             200 -> Unit
-            403, 418, 429 -> throw IOException("微博风控拦截，请稍后重试")
-            404, 410 -> throw IOException("微博内容不存在或已删除")
-            else -> throw IOException("微博数据获取失败，请稍后重试")
+            403, 418, 429 -> throw ParseException(ParseErrorKind.IP_BLOCKED, "微博风控拦截，请稍后重试", hintOverride = "请换网络后重试")
+            404, 410 -> throw ParseException(ParseErrorKind.NOT_FOUND, "微博内容不存在或已删除", appendHint = false)
+            else -> throw ParseException(ParseErrorKind.NETWORK, "微博数据获取失败，请稍后重试", appendHint = false)
         }
         // 200 但 content-type 不是 JSON，说明被风控换成了验证页/网关页。
         if (!contentType.contains("application/json", ignoreCase = true)) {
-            throw IOException("微博风控拦截，请稍后重试")
+            throw ParseException(ParseErrorKind.IP_BLOCKED, "微博风控拦截，请稍后重试", hintOverride = "请换网络后重试")
         }
         val json = try {
             JSONObject(body)
         } catch (e: Exception) {
-            throw IOException("微博数据获取失败，请稍后重试")
+            throw ParseException(ParseErrorKind.NETWORK, "微博数据获取失败，请稍后重试", appendHint = false)
         }
         val data = json.optJSONObject("data")
-            ?: throw IOException("微博内容不存在或已删除")
+            ?: throw ParseException(ParseErrorKind.NOT_FOUND, "微博内容不存在或已删除", appendHint = false)
         buildStatusResult(rawUrl, queryId, data, cookie, allowRetweet = true)
     }
 
@@ -175,7 +175,7 @@ class WeiboParser @Inject constructor(
             }
         }
         if (videoUrl.isBlank()) {
-            throw IOException("该微博没有视频，暂不支持图文转写")
+            throw ParseException(ParseErrorKind.UNSUPPORTED, "该微博没有视频，暂不支持图文转写", appendHint = false)
         }
         val user = data.optJSONObject("user")
         val userId = user?.optLong("id", 0L) ?: 0L
@@ -225,23 +225,23 @@ class WeiboParser @Inject constructor(
             if (cookie.isNotBlank()) header("Cookie", cookie)
         }.build()
         val body = client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("微博数据获取失败，请稍后重试")
+            if (!response.isSuccessful) throw ParseException(ParseErrorKind.NETWORK, "微博数据获取失败，请稍后重试", appendHint = false)
             response.body?.stringCapped().orEmpty()
         }
         val json = try {
             JSONObject(body)
         } catch (e: Exception) {
-            throw IOException("微博数据获取失败，请稍后重试")
+            throw ParseException(ParseErrorKind.NETWORK, "微博数据获取失败，请稍后重试", appendHint = false)
         }
         val playInfo = json.optJSONObject("data")?.optJSONObject("Component_Play_Playinfo")
-            ?: throw IOException("微博视频数据为空（作品可能已删除）")
+            ?: throw ParseException(ParseErrorKind.NOT_FOUND, "微博视频数据为空（作品可能已删除）", appendHint = false)
         // urls 是「码率 → 直链」字典，第一条码率最高；为空时兜底 stream_url（最低码率）。
         val urls = playInfo.optJSONObject("urls")
         val firstKey = urls?.keys()?.asSequence()?.firstOrNull()
         val videoUrl = (firstKey?.let { urls.optStr(it) }?.takeIf { it.isNotBlank() }
             ?: playInfo.optStr("stream_url")).ensureHttps()
         if (videoUrl.isBlank()) {
-            throw IOException("该微博没有视频，暂不支持图文转写")
+            throw ParseException(ParseErrorKind.UNSUPPORTED, "该微博没有视频，暂不支持图文转写", appendHint = false)
         }
         VideoInfo(
             platform = Platform.WEIBO,

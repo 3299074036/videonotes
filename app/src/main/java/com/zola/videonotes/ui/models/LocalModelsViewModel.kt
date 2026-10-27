@@ -243,6 +243,17 @@ class LocalModelsViewModel @Inject constructor(
                 _probingIds.value -= id
                 registryTick.value++
             }
+            // 之前这里只刷副行、不发 Toast，点了等于没反馈（ASR 单条四分支全发提示）。
+            // 探针结论跑完已落盘，直接读最新结论发提示；null = 没留下结论，报未完成。
+            val name = entry.displayName
+            val message = when (probeStateOf(entry)) {
+                TemplateProbeState.OK -> "已重新校验 $name，模板校验通过"
+                TemplateProbeState.NO_TEMPLATE -> "已重新校验 $name：无可用模板"
+                TemplateProbeState.UNSUPPORTED -> "已重新校验 $name：模板暂不支持"
+                TemplateProbeState.LOAD_FAILED -> "已重新校验 $name：模型加载失败，请重新下载"
+                null -> "已重新校验 $name，校验未完成，请重试"
+            }
+            _userMessage.tryEmit(message)
         }
     }
 
@@ -253,6 +264,11 @@ class LocalModelsViewModel @Inject constructor(
             _revalidatingAll.value = true
             try {
                 val targets = browseList.value.ordered.filter { canRevalidate(it) }
+                // LLM 探针要加载模型文件跑模板，单模型也要数十秒；先给一句开始提示，
+                // 否则等待期间看起来像没反应（结束提示本来就有，见下面）。
+                if (targets.isNotEmpty()) {
+                    _userMessage.tryEmit("正在校验已下载模型…")
+                }
                 var done = 0
                 for (entry in targets) {
                     _probingIds.value += entry.id

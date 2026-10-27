@@ -3,6 +3,7 @@ package com.zola.videonotes.data.subtitle
 import com.google.gson.Gson
 import com.zola.videonotes.data.network.bilibili.BiliApiService
 import com.zola.videonotes.data.network.bilibili.BiliSubtitleFile
+import com.zola.videonotes.data.network.bilibili.BiliSubtitleTrack
 import com.zola.videonotes.data.network.bilibili.WbiSigner
 import com.zola.videonotes.data.network.bilibili.extractBiliIds
 import com.zola.videonotes.data.parser.ensureHttpScheme
@@ -24,7 +25,9 @@ private val biliGson = Gson()
 /**
  * B站字幕获取器（P0）：nav 取 WBI 密钥 → pagelist 取 cid → wbi/v2 取字幕轨道 → 下载字幕 JSON 解析为分段。
  *
- * 选轨道策略：lan 以 zh 开头或 lan_doc 含"中文"优先，否则取第一条。
+ * 选轨道策略（P3）：手动 zh > 手动 en > AI zh > AI en > 其余，逐条下载解析，
+ * 首条非空即用；全部下载失败才报失败，全部为空才走 ASR 兜底。
+ * AI 判定：lan 以 ai- 开头（如 ai-zh）或 lan_doc 含 AI 字样，来源标 AUTO 而非 OFFICIAL。
  * 无字幕轨道时返回空结果（上层走 ASR 兜底），不抛异常。
  * 明确错误：-412（请求被限制）、need_login_subtitle（需登录）。
  */
@@ -76,20 +79,36 @@ class BilibiliSubtitleFetcher @Inject constructor(
                 // 无字幕：返回空结果，上层走 ASR 兜底
                 return Result.success(SubtitleFetchResult(emptyList(), SubtitleSource.OFFICIAL, ""))
             }
-            val track = tracks.firstOrNull {
-                it.lan.startsWith("zh", ignoreCase = true) || it.lanDoc.contains("中文")
-            } ?: tracks.first()
-
-            // 4. 下载字幕 JSON 并解析
-            val raw = okHttpClient.downloadText(track.subtitleUrl.ensureHttpScheme())
-            val segments = parseBilibiliSubtitleJson(raw, video.storageKey(), SubtitleSource.OFFICIAL)
-            Result.success(
-                SubtitleFetchResult(
-                    segments = segments,
-                    source = SubtitleSource.OFFICIAL,
-                    languageLabel = track.lanDoc.ifBlank { track.lan },
-                ),
+            // 4. 按偏好顺序逐条下载字幕 JSON 并解析（轨道级兜底链）
+            val ordered = orderSubtitleTracks(
+                tracks,
+                isAuto = { isBiliAiTrack(it) },
+                langTag = { "${it.lan} ${it.lanDoc}" },
             )
+            val videoId = video.storageKey()
+            when (val outcome = firstNonEmptyTrack(ordered) { track ->
+                val raw = okHttpClient.downloadText(track.subtitleUrl.ensureHttpScheme())
+                val source = if (isBiliAiTrack(track)) SubtitleSource.AUTO else SubtitleSource.OFFICIAL
+                parseBilibiliSubtitleJson(raw, videoId, source)
+            }) {
+                is TrackAttemptOutcome.Hit<*> -> {
+                    val track = outcome.candidate as BiliSubtitleTrack
+                    val source = if (isBiliAiTrack(track)) SubtitleSource.AUTO else SubtitleSource.OFFICIAL
+                    Result.success(
+                        SubtitleFetchResult(
+                            segments = outcome.segments,
+                            source = source,
+                            languageLabel = track.lanDoc.ifBlank { track.lan },
+                        ),
+                    )
+                }
+                is TrackAttemptOutcome.Empty ->
+                    Result.success(SubtitleFetchResult(emptyList(), SubtitleSource.OFFICIAL, ""))
+                is TrackAttemptOutcome.Failed -> {
+                    val e = outcome.error
+                    throw if (e is IOException) e else IOException("B站字幕获取失败：${e.message}", e)
+                }
+            }
         } catch (e: IOException) {
             Result.failure(e)
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -101,6 +120,10 @@ class BilibiliSubtitleFetcher @Inject constructor(
     }
 
 }
+/** B站 AI 字幕判定：lan 以 ai- 开头（如 ai-zh）或 lan_doc 含 AI 字样。 */
+internal fun isBiliAiTrack(track: BiliSubtitleTrack): Boolean =
+    track.lan.startsWith("ai-", ignoreCase = true) || track.lanDoc.contains("AI", ignoreCase = true)
+
 /**
  * 解析 B站字幕文件 JSON：{"body": [{"from": 秒, "to": 秒, "content": "文本"}]}。
  * 秒（double）转毫秒用四舍五入；content 为空的分段跳过；idx 按输出顺序紧凑编号。

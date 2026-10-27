@@ -52,17 +52,15 @@ class KuaishouParser @Inject constructor(
             if (videoUrl.isNullOrBlank()) {
                 val atlas = photo.optJSONObject("ext_params")?.optJSONObject("atlas")
                 val hasAtlas = (atlas?.optJSONArray("list")?.length() ?: 0) > 0
-                throw IOException(
-                    if (hasAtlas) {
-                        "图集暂不支持转写"
-                    } else {
-                        "快手页面里没有视频数据（作品可能已删除或页面改版）"
-                    },
-                )
+                throw if (hasAtlas) {
+                    ParseException(ParseErrorKind.UNSUPPORTED, "图集暂不支持转写")
+                } else {
+                    ParseException(ParseErrorKind.UNKNOWN, "快手页面里没有视频数据（作品可能已删除或页面改版）")
+                }
             }
             val videoId = PHOTO_ID_REGEX.find(pageUrl)?.groupValues?.get(1)
                 ?: photo.optStr("id").takeIf { it.isNotBlank() }
-                ?: throw IOException("未能从快手链接中识别作品 ID")
+                ?: throw ParseException(ParseErrorKind.INVALID_LINK, "未能从快手链接中识别作品 ID")
             Result.success(
                 VideoInfo(
                     platform = Platform.KUAISHOU,
@@ -82,7 +80,7 @@ class KuaishouParser @Inject constructor(
             // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
             throw e
         } catch (t: Throwable) {
-            Result.failure(IOException("快手解析失败：${t.message ?: t.javaClass.simpleName}"))
+            Result.failure(ParseException(ParseErrorKind.UNKNOWN, "快手解析失败：${t.message ?: t.javaClass.simpleName}"))
         }
     }
 
@@ -117,7 +115,7 @@ class KuaishouParser @Inject constructor(
         }.get().build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IOException("快手作品页请求失败（HTTP ${response.code}）")
+                throw ParseException(ParseErrorClassifier.http(response.code), "快手作品页请求失败（HTTP ${response.code}）")
             }
             response.body?.stringCapped().orEmpty()
         }
@@ -129,10 +127,10 @@ class KuaishouParser @Inject constructor(
      */
     private fun extractInitState(html: String): JSONObject {
         val markerIndex = html.indexOf("window.INIT_STATE").takeIf { it >= 0 }
-            ?: throw IOException("快手页面里没有 window.INIT_STATE（作品可能已删除或页面改版）")
+            ?: throw ParseException(ParseErrorKind.UNKNOWN, "快手页面里没有 window.INIT_STATE（作品可能已删除或页面改版）")
         var i = html.indexOf('{', markerIndex)
         if (i < 0) {
-            throw IOException("快手页面里没有 window.INIT_STATE（作品可能已删除或页面改版）")
+            throw ParseException(ParseErrorKind.UNKNOWN, "快手页面里没有 window.INIT_STATE（作品可能已删除或页面改版）")
         }
         val start = i
         var depth = 0
@@ -159,7 +157,7 @@ class KuaishouParser @Inject constructor(
                             return try {
                                 JSONObject(json)
                             } catch (e: Exception) {
-                                throw IOException("window.INIT_STATE 不是合法 JSON")
+                                throw ParseException(ParseErrorKind.UNKNOWN, "window.INIT_STATE 不是合法 JSON")
                             }
                         }
                     }
@@ -167,7 +165,7 @@ class KuaishouParser @Inject constructor(
             }
             i++
         }
-        throw IOException("快手页面里没有 window.INIT_STATE（作品可能已删除或页面改版）")
+        throw ParseException(ParseErrorKind.UNKNOWN, "快手页面里没有 window.INIT_STATE（作品可能已删除或页面改版）")
     }
 
     /**
@@ -178,7 +176,7 @@ class KuaishouParser @Inject constructor(
      */
     private fun findPhoto(initState: JSONObject, linkId: String?): JSONObject {
         if (linkId == null) {
-            throw IOException("未能从快手链接中识别作品 ID")
+            throw ParseException(ParseErrorKind.INVALID_LINK, "未能从快手链接中识别作品 ID")
         }
         initState.optJSONObject(linkId)?.optJSONObject("photo")?.let { return it }
         val photos = mutableListOf<JSONObject>()
@@ -187,7 +185,7 @@ class KuaishouParser @Inject constructor(
             initState.optJSONObject(keys.next())?.optJSONObject("photo")?.let { photos += it }
         }
         if (photos.size == 1) return photos[0]
-        throw IOException("快手页面数据与链接作品 id 不匹配（INIT_STATE 里没有该作品）")
+        throw ParseException(ParseErrorKind.UNKNOWN, "快手页面数据与链接作品 id 不匹配（INIT_STATE 里没有该作品）")
     }
 
     /** 从 CdnUrl 数组里取第一条有 url 的。 */

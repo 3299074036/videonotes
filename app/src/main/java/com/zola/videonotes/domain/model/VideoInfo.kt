@@ -26,4 +26,9 @@ data class VideoInfo(
     val mediaHeaders: Map<String, String> = emptyMap(),
     /** 分P数（仅 B站解析时填充，>1 表示多分P视频；其余平台恒为 1）。 */
     val partCount: Int = 1,
+    /**
+     * 仅元数据（P4）：NewPipe 被风控时从 watch 页 HTML 抢到的标题 / 封面 / 作者 / 时长，
+     * 无播放地址、无音频、无字幕——界面必须明示，绝不能当成可播视频展示。
+     */
+    val isMetadataOnly: Boolean = false,
 )

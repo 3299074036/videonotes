@@ -55,7 +55,7 @@ class XiaohongshuParser @Inject constructor(
                 redirects.resolve(cleanUrl)
             }
             val noteId = noteIdPattern.find(finalUrl)?.groupValues?.get(1)
-                ?: throw IOException("未能从小红书链接中识别笔记 ID：请使用 App 内「分享 → 复制链接」得到的完整链接（含 xsec_token）")
+                ?: throw ParseException(ParseErrorKind.INVALID_LINK, "未能从小红书链接中识别笔记 ID：请使用 App 内「分享 → 复制链接」得到的完整链接（含 xsec_token）", appendHint = false)
             // 原分享链接的查询串（含 xsec_token）：重建两条路径的地址时都带上
             val query = finalUrl.substringAfter('?', "").takeIf { it.isNotBlank() }?.let { "?$it" }.orEmpty()
             val cookie = authStore.webSession()?.let { "web_session=$it" }.orEmpty()
@@ -78,7 +78,7 @@ class XiaohongshuParser @Inject constructor(
             // M-19：取消必须原样抛出；吞成失败会让“用户取消”变“XX失败”，且重试逻辑误判。
             throw e
         } catch (t: Throwable) {
-            Result.failure(IOException("小红书解析失败：${t.message ?: t.javaClass.simpleName}"))
+            Result.failure(ParseException(ParseErrorKind.UNKNOWN, "小红书解析失败：${t.message ?: t.javaClass.simpleName}"))
         }
     }
 
@@ -93,7 +93,7 @@ class XiaohongshuParser @Inject constructor(
             ?.optJSONObject("noteDetailMap")
             ?.optJSONObject(noteId)
             ?.optJSONObject("note")
-            ?: throw IOException("小红书页面里没有该笔记数据")
+            ?: throw ParseException(ParseErrorKind.UNKNOWN, "小红书页面里没有该笔记数据")
         return buildVideoInfo(
             note = note,
             noteId = noteId,
@@ -112,9 +112,9 @@ class XiaohongshuParser @Inject constructor(
         )
         val state = extractInitialState(html)
         val noteRoot = state.optJSONObject("noteData")
-            ?: throw IOException("小红书分享链接失效或内容已删除")
+            ?: throw ParseException(ParseErrorKind.UNKNOWN, "小红书分享链接失效或内容已删除")
         val note = noteRoot.optJSONObject("data")?.optJSONObject("noteData")
-            ?: throw IOException("小红书页面里没有笔记数据（内容可能已删除）")
+            ?: throw ParseException(ParseErrorKind.UNKNOWN, "小红书页面里没有笔记数据（内容可能已删除）")
         val preloadCover = imageUrls(noteRoot.optJSONObject("normalNotePreloadData")?.optJSONArray("imagesList")) {
             it.str("urlSizeLarge").ifBlank { it.str("url") }
         }
@@ -141,7 +141,7 @@ class XiaohongshuParser @Inject constructor(
             }.get().build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    throw IOException("小红书分享页请求失败（HTTP ${response.code}），可能触发平台验证码风控")
+                    throw ParseException(ParseErrorClassifier.http(response.code), "小红书分享页请求失败（HTTP ${response.code}），可能触发平台验证码风控")
                 }
                 val finalUrl = response.request.url.toString()
                 if (isLoginWallUrl(finalUrl)) {
@@ -158,18 +158,18 @@ class XiaohongshuParser @Inject constructor(
         val marker = "window.__INITIAL_STATE__"
         val markerIndex = html.indexOf(marker)
             .takeIf { it >= 0 }
-            ?: throw IOException("小红书页面里没有笔记数据（可能被风控拦截或页面改版）")
+            ?: throw ParseException(ParseErrorKind.UNKNOWN, "小红书页面里没有笔记数据（可能被风控拦截或页面改版）")
         val braceStart = html.indexOf('{', markerIndex)
             .takeIf { it >= 0 }
-            ?: throw IOException("小红书页面里没有笔记数据（可能被风控拦截或页面改版）")
+            ?: throw ParseException(ParseErrorKind.UNKNOWN, "小红书页面里没有笔记数据（可能被风控拦截或页面改版）")
         val jsonText = extractBalancedJson(html, braceStart)
-            ?: throw IOException("小红书页面数据不完整")
+            ?: throw ParseException(ParseErrorKind.UNKNOWN, "小红书页面数据不完整")
         val cleaned = jsonText
             .replace(":undefined", ":null")
             .replace(",undefined", ",null")
             .replace("[undefined", "[null")
         return runCatching { JSONObject(cleaned) }.getOrElse {
-            throw IOException("小红书页面数据解析失败")
+            throw ParseException(ParseErrorKind.UNKNOWN, "小红书页面数据解析失败")
         }
     }
 
@@ -212,9 +212,9 @@ class XiaohongshuParser @Inject constructor(
         sourceUrl: String,
     ): VideoInfo {
         val videoObj = note.optJSONObject("video")
-            ?: throw IOException("小红书图文笔记暂不支持转写，仅支持视频笔记")
+            ?: throw ParseException(ParseErrorKind.UNSUPPORTED, "小红书图文笔记暂不支持转写，仅支持视频笔记")
         val stream = pickVideo(videoObj)
-            ?: throw IOException("小红书视频笔记没有取到视频直链（笔记里有 video 字段，但 media.stream 里没有可用地址）")
+            ?: throw ParseException(ParseErrorKind.UNKNOWN, "小红书视频笔记没有取到视频直链（笔记里有 video 字段，但 media.stream 里没有可用地址）")
         val title = note.str("title").ifBlank { note.str("desc") }.ifBlank { "小红书视频 $noteId" }
         val author = note.optJSONObject("user")?.str(authorKey).orEmpty()
         val cover = coverUrls.firstOrNull()?.let { watermarkFreeOrRaw(it) }.orEmpty()
@@ -302,12 +302,14 @@ class XiaohongshuParser @Inject constructor(
     }
 
     /** 被登录墙拦下：调用方不再重试另一条路径，直接报可操作的提示。 */
-    class XhsLoginRequiredException(tokenMissing: Boolean = false) : IOException(
+    class XhsLoginRequiredException(tokenMissing: Boolean = false) : ParseException(
+        if (tokenMissing) ParseErrorKind.INVALID_LINK else ParseErrorKind.NEED_LOGIN,
         if (tokenMissing) {
             "该小红书链接已失效（缺少 xsec_token），请重新粘贴小红书原链接解析"
         } else {
             "小红书要求登录后才能查看笔记内容，请先到设置 → 小红书账号登录"
         },
+        appendHint = false,
     )
 
     companion object {

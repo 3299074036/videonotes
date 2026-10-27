@@ -128,10 +128,13 @@ fun deriveProcessSteps(
     generateState: GenerateNoteUiState,
     existingNoteId: Long?,
     pipelineState: PipelineUiState = PipelineUiState.Idle,
+    /** 本轮字幕未获取的原因（ViewModel 在取空 / 取失败时记下）；为 null 时不显示。 */
+    subtitleFallbackReason: String? = null,
 ): ProcessStepsUi {
     val fetched = subtitleState as? SubtitleUiState.Fetched
     val hasTranscript = (fetched?.result?.segments?.isNotEmpty() == true)
     val fromAsr = fetched?.result?.source == SubtitleSource.ASR
+    val fallbackDetail = subtitleFallbackReason?.let { "字幕未获取：$it" }
     val transcribe = transcribeState as? TranscribeUiState.Working
     val transcribeFailed = transcribeState as? TranscribeUiState.Failed
     val generate = generateState as? GenerateNoteUiState.Working
@@ -148,7 +151,15 @@ fun deriveProcessSteps(
                 detail = transcribe.stageText,
                 progress = transcribe.progress.takeIf { it >= 0 },
             )
-            step3 = ProcessStepUi("语音转写", ProcessStepStatus.PENDING)
+            step3 = if (fallbackDetail != null) {
+                ProcessStepUi(
+                    "语音转写",
+                    ProcessStepStatus.PENDING,
+                    detail = "$fallbackDetail，已转写兜底",
+                )
+            } else {
+                ProcessStepUi("语音转写", ProcessStepStatus.PENDING)
+            }
         }
         transcribe != null -> {
             step2 = ProcessStepUi("提取音频", ProcessStepStatus.DONE, detail = "已提取音频")
@@ -173,7 +184,8 @@ fun deriveProcessSteps(
             step3 = ProcessStepUi(
                 "语音转写",
                 ProcessStepStatus.DONE,
-                detail = "本机转写 · 共 ${fetched!!.result.segments.size} 段",
+                detail = "本机转写 · 共 ${fetched!!.result.segments.size} 段" +
+                    (fallbackDetail?.let { "（$it）" } ?: ""),
             )
         }
         hasTranscript -> {
@@ -211,7 +223,8 @@ fun deriveProcessSteps(
             step3 = ProcessStepUi(
                 "语音转写",
                 ProcessStepStatus.PENDING,
-                detail = "无官方字幕时用本机转写",
+                detail = fallbackDetail?.let { "$it，可用本机转写" }
+                    ?: "无官方字幕时用本机转写",
             )
         }
     }

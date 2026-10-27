@@ -25,6 +25,9 @@ newpipeExtractor = "v0.26.5"
 desugar = "2.1.5"
 datastore = "1.2.1"
 junit = "4.13.2"
+# P0：本地单测里 org.json 是 android.jar 的空壳（方法抛 not mocked），
+# 测解析器必须补真实实现；仅 testImplementation，不进 APK。
+orgJson = "20240303"
 securityCrypto = "1.1.0"
 # M6：站内播放器（Media3）+ 长任务（WorkManager）+ Hilt Worker 注入
 media3 = "1.11.1"
@@ -72,6 +75,7 @@ androidx-hilt-work = { group = "androidx.hilt", name = "hilt-work", version.ref 
 # 抖音解析：无头 WebView
 androidx-webkit = { group = "androidx.webkit", name = "webkit", version.ref = "webkit" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

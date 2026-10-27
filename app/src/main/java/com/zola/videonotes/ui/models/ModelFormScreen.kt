@@ -107,6 +107,9 @@ fun ModelFormScreen(
     var description by remember { mutableStateOf(editEntry?.description ?: "") }
     // 是否推荐：新增默认否，编辑预填当前值；保存时直接决定条目的推荐标签与组内排序。
     var recommended by remember { mutableStateOf(editEntry?.recommended ?: false) }
+    // 推理线程数：仅本地语言模型有效；编辑预填当前覆盖值（null = 自动分档）。
+    var threadsAuto by remember { mutableStateOf(editEntry?.threadsOverride == null) }
+    var threadsInput by remember { mutableStateOf(editEntry?.threadsOverride?.toString() ?: "") }
     val files = remember {
         mutableStateListOf<FileField>().apply {
             val initial = editEntry?.files?.map {
@@ -137,6 +140,17 @@ fun ModelFormScreen(
                 return
             }
         }
+        // 线程数：仅 LLM 手动档要校验；自动档与识别模型一律记 null（自动分档）。
+        val threadsValue: Int?
+        if (kind == CatalogKind.LLM && !threadsAuto) {
+            threadsValue = threadsInput.toIntOrNull()
+            if (threadsValue == null || threadsValue !in 1..16) {
+                errors = mapOf("threads" to "线程数须为 1–16 的整数")
+                return
+            }
+        } else {
+            threadsValue = null
+        }
         val draft = EntryDraft(
             displayName = displayName,
             id = id,
@@ -146,6 +160,7 @@ fun ModelFormScreen(
             useCases = useCases.toList(),
             minRamGB = minRam,
             description = description,
+            threadsOverride = threadsValue,
             files = files.map {
                 EntryFileDraft(
                     name = it.name,
@@ -371,6 +386,37 @@ fun ModelFormScreen(
                 minLines = 2,
                 modifier = Modifier.fillMaxWidth(),
             )
+
+            if (kind == CatalogKind.LLM) {
+                FormSection("推理设置")
+                FormLabel("线程数")
+                PaperSegmentedRow(
+                    labels = listOf("自动（按大小分档）", "手动指定"),
+                    selectedIndex = if (threadsAuto) 0 else 1,
+                    onSelect = { index ->
+                        threadsAuto = index == 0
+                        clearError("threads")
+                    },
+                    spread = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (threadsAuto) {
+                    FormHelp("自动：≤2GiB 4 线程 · ≤4GiB 6 线程 · >4GiB 8 线程。改动在下次生成时自动生效，不用重启。")
+                } else {
+                    Spacer(modifier = Modifier.height(VideoNotesTokens.Space8))
+                    OutlinedTextField(
+                        value = threadsInput,
+                        onValueChange = { threadsInput = it; clearError("threads") },
+                        placeholder = { Text("如 8") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        isError = "threads" in errors,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    FormError(errors["threads"])
+                    FormHelp("范围 1–16 的整数。保存后下次生成即用新线程数，不用重启。")
+                }
+            }
 
             FormSection("文件")
             files.forEachIndexed { index, file ->
